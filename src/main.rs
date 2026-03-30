@@ -1,3 +1,5 @@
+#![recursion_limit = "256"]
+
 use jira_cli::api::{ApiError, JiraClient};
 use jira_cli::commands;
 use jira_cli::config::Config;
@@ -6,8 +8,24 @@ use jira_cli::output::{OutputConfig, exit_code_for_error};
 use clap::{CommandFactory, Parser, Subcommand};
 use clap_complete::Shell;
 
+fn parse_field(s: &str) -> Result<(String, serde_json::Value), String> {
+    let (key, raw) = s
+        .split_once('=')
+        .ok_or_else(|| format!("field must be in key=value format, got: {s}"))?;
+    // Try to parse as JSON (handles numbers, booleans, objects, arrays).
+    // Fall back to a plain string.
+    let value =
+        serde_json::from_str(raw).unwrap_or_else(|_| serde_json::Value::String(raw.to_string()));
+    Ok((key.to_string(), value))
+}
+
 #[derive(Parser)]
-#[command(name = "jira", version, about = "CLI for Jira")]
+#[command(
+    name = "jira",
+    version,
+    about = "CLI for Jira",
+    arg_required_else_help = true
+)]
 struct Cli {
     /// Atlassian domain (e.g. mycompany.atlassian.net) [env: JIRA_HOST]
     #[arg(long, env = "JIRA_HOST")]
@@ -36,11 +54,11 @@ struct Cli {
 #[derive(Subcommand)]
 enum Command {
     /// Manage issues
-    #[command(subcommand)]
+    #[command(subcommand, arg_required_else_help = true)]
     Issues(IssuesCommand),
 
     /// List projects
-    #[command(subcommand)]
+    #[command(subcommand, arg_required_else_help = true)]
     Projects(ProjectsCommand),
 
     /// Search issues with JQL
@@ -57,6 +75,18 @@ enum Command {
         offset: usize,
     },
 
+    /// Search for users by name or email
+    #[command(subcommand, arg_required_else_help = true)]
+    Users(UsersCommand),
+
+    /// List boards
+    #[command(subcommand, arg_required_else_help = true)]
+    Boards(BoardsCommand),
+
+    /// List sprints
+    #[command(subcommand, arg_required_else_help = true)]
+    Sprints(SprintsCommand),
+
     /// Show the currently authenticated user
     Myself,
 
@@ -66,6 +96,10 @@ enum Command {
 
     /// Bootstrap config and API token setup (alias for `config init`)
     Init,
+
+    /// List available fields (system and custom)
+    #[command(subcommand, arg_required_else_help = true)]
+    Fields(FieldsCommand),
 
     /// Dump all commands and arguments as JSON for agent introspection
     Schema,
@@ -95,6 +129,10 @@ enum IssuesCommand {
         /// Filter by assignee (use "me" for current user)
         #[arg(short, long)]
         assignee: Option<String>,
+
+        /// Filter by issue type (e.g. Bug, Story, Task)
+        #[arg(short = 't', long)]
+        issue_type: Option<String>,
 
         /// Filter by sprint name or use "active" for open sprints
         #[arg(long)]
@@ -152,6 +190,14 @@ enum IssuesCommand {
         /// Assign to this account ID (use "me" for yourself)
         #[arg(long)]
         assignee: Option<String>,
+
+        /// Add to a sprint (sprint ID, name substring, or "active")
+        #[arg(long)]
+        sprint: Option<String>,
+
+        /// Custom field values as key=value pairs (e.g. --field customfield_10016=5)
+        #[arg(long, value_parser = parse_field)]
+        field: Vec<(String, serde_json::Value)>,
     },
 
     /// Update fields on an existing issue
@@ -170,6 +216,20 @@ enum IssuesCommand {
         /// New priority (e.g. High, Medium, Low)
         #[arg(long)]
         priority: Option<String>,
+
+        /// Custom field values as key=value pairs (e.g. --field customfield_10016=5)
+        #[arg(long, value_parser = parse_field)]
+        field: Vec<(String, serde_json::Value)>,
+    },
+
+    /// Move an issue to a sprint
+    Move {
+        /// Issue key (e.g. PROJ-123)
+        key: String,
+
+        /// Sprint ID, sprint name substring, or "active"
+        #[arg(long)]
+        sprint: String,
     },
 
     /// Add a comment to an issue
@@ -207,6 +267,29 @@ enum IssuesCommand {
         #[arg(long)]
         assignee: String,
     },
+
+    /// List available issue link types
+    LinkTypes,
+
+    /// Link this issue to another issue
+    Link {
+        /// Issue key (e.g. PROJ-123)
+        key: String,
+
+        /// Key of the issue to link to
+        #[arg(long)]
+        to: String,
+
+        /// Link type name (e.g. "Blocks", "Duplicate", "Relates")
+        #[arg(long, default_value = "Relates")]
+        link_type: String,
+    },
+
+    /// Remove a link between issues by link ID
+    Unlink {
+        /// Link ID (shown in `issues show` output and JSON)
+        link_id: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -226,6 +309,45 @@ enum ConfigCommand {
     Show,
     /// Print example config file and token instructions
     Init,
+}
+
+#[derive(Subcommand)]
+enum UsersCommand {
+    /// Search for users by name or email
+    Search {
+        /// Name, username, or email fragment to search for
+        query: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum BoardsCommand {
+    /// List all boards
+    List,
+}
+
+#[derive(Subcommand)]
+enum SprintsCommand {
+    /// List sprints, optionally filtered by board and/or state
+    List {
+        /// Board name or ID (lists all boards if omitted)
+        #[arg(long)]
+        board: Option<String>,
+
+        /// Filter by state: active (default), closed, future, or all
+        #[arg(long, default_value = "active")]
+        state: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum FieldsCommand {
+    /// List all fields with their IDs and types
+    List {
+        /// Show only custom fields
+        #[arg(long)]
+        custom: bool,
+    },
 }
 
 #[tokio::main]
@@ -254,7 +376,7 @@ async fn run(cli: Cli, out: OutputConfig) -> Result<(), Box<dyn std::error::Erro
         }
 
         Command::Init => {
-            jira_cli::config::init(&out);
+            jira_cli::config::init(&out, cli.host.as_deref());
             return Ok(());
         }
 
@@ -264,7 +386,7 @@ async fn run(cli: Cli, out: OutputConfig) -> Result<(), Box<dyn std::error::Erro
                     jira_cli::config::show(&out, cli.host, cli.email, cli.profile)?;
                 }
                 ConfigCommand::Init => {
-                    jira_cli::config::init(&out);
+                    jira_cli::config::init(&out, cli.host.as_deref());
                 }
             }
             return Ok(());
@@ -288,6 +410,7 @@ async fn run(cli: Cli, out: OutputConfig) -> Result<(), Box<dyn std::error::Erro
                 project,
                 status,
                 assignee,
+                issue_type,
                 sprint,
                 jql,
                 limit,
@@ -299,6 +422,7 @@ async fn run(cli: Cli, out: OutputConfig) -> Result<(), Box<dyn std::error::Erro
                     project.as_deref(),
                     status.as_deref(),
                     assignee.as_deref(),
+                    issue_type.as_deref(),
                     sprint.as_deref(),
                     jql.as_deref(),
                     limit,
@@ -317,6 +441,8 @@ async fn run(cli: Cli, out: OutputConfig) -> Result<(), Box<dyn std::error::Erro
                 priority,
                 labels,
                 assignee,
+                sprint,
+                field,
             } => {
                 let label_refs: Vec<&str> = labels.iter().map(String::as_str).collect();
                 let labels_opt = if label_refs.is_empty() {
@@ -342,6 +468,8 @@ async fn run(cli: Cli, out: OutputConfig) -> Result<(), Box<dyn std::error::Erro
                     priority.as_deref(),
                     labels_opt,
                     assignee_str.as_deref(),
+                    sprint.as_deref(),
+                    &field,
                 )
                 .await?
             }
@@ -350,6 +478,7 @@ async fn run(cli: Cli, out: OutputConfig) -> Result<(), Box<dyn std::error::Erro
                 summary,
                 description,
                 priority,
+                field,
             } => {
                 commands::issues::update(
                     &client,
@@ -358,8 +487,12 @@ async fn run(cli: Cli, out: OutputConfig) -> Result<(), Box<dyn std::error::Erro
                     summary.as_deref(),
                     description.as_deref(),
                     priority.as_deref(),
+                    &field,
                 )
                 .await?
+            }
+            IssuesCommand::Move { key, sprint } => {
+                commands::issues::move_to_sprint(&client, &out, &key, &sprint).await?
             }
             IssuesCommand::Comment { key, body } => {
                 commands::issues::comment(&client, &out, &key, &body).await?
@@ -373,6 +506,13 @@ async fn run(cli: Cli, out: OutputConfig) -> Result<(), Box<dyn std::error::Erro
             IssuesCommand::Assign { key, assignee } => {
                 commands::issues::assign(&client, &out, &key, &assignee).await?
             }
+            IssuesCommand::LinkTypes => commands::issues::link_types(&client, &out).await?,
+            IssuesCommand::Link { key, to, link_type } => {
+                commands::issues::link(&client, &out, &key, &to, &link_type).await?
+            }
+            IssuesCommand::Unlink { link_id } => {
+                commands::issues::unlink(&client, &out, &link_id).await?
+            }
         },
 
         Command::Projects(cmd) => match cmd {
@@ -380,11 +520,37 @@ async fn run(cli: Cli, out: OutputConfig) -> Result<(), Box<dyn std::error::Erro
             ProjectsCommand::Show { key } => commands::projects::show(&client, &out, &key).await?,
         },
 
+        Command::Users(cmd) => match cmd {
+            UsersCommand::Search { query } => {
+                commands::users::search(&client, &out, &query).await?
+            }
+        },
+
+        Command::Boards(cmd) => match cmd {
+            BoardsCommand::List => commands::boards::list(&client, &out).await?,
+        },
+
+        Command::Sprints(cmd) => match cmd {
+            SprintsCommand::List { board, state } => {
+                // "all" is a special token meaning no state filter.
+                let state_filter = if state == "all" {
+                    None
+                } else {
+                    Some(state.as_str())
+                };
+                commands::sprints::list(&client, &out, board.as_deref(), state_filter).await?
+            }
+        },
+
         Command::Search { jql, limit, offset } => {
             commands::search::run(&client, &out, &jql, limit, offset).await?
         }
 
         Command::Myself => commands::myself::show(&client, &out).await?,
+
+        Command::Fields(cmd) => match cmd {
+            FieldsCommand::List { custom } => commands::fields::list(&client, &out, custom).await?,
+        },
 
         // Already handled above
         Command::Schema | Command::Completions { .. } | Command::Config(_) | Command::Init => {}
@@ -401,9 +567,91 @@ fn print_schema() {
 }
 
 fn schema_json() -> serde_json::Value {
+    use std::collections::{HashMap, HashSet};
+
     let config_path = jira_cli::config::schema_config_path();
     let config_path_description = jira_cli::config::schema_config_path_description();
     let permission_advice = jira_cli::config::schema_recommended_permissions_example();
+
+    // Annotations keyed by base command path (no <arg> suffixes).
+    // Only things clap cannot express: json_shape and alias_for.
+    let init_shape = serde_json::json!({
+        "configPath": "/path/to/config.toml",
+        "pathResolution": config_path_description,
+        "tokenInstructions": "https://id.atlassian.com/manage-profile/security/api-tokens",
+        "configExists": false,
+        "recommendedPermissions": permission_advice,
+        "example": {
+            "default": { "host": "mycompany.atlassian.net", "email": "me@example.com", "token": "..." },
+            "profiles": { "work": { "host": "...", "email": "...", "token": "..." } }
+        }
+    });
+
+    let annotations: HashMap<&str, serde_json::Value> = [
+        ("issues list", serde_json::json!({ "json_shape": {
+            "total": "N", "startAt": 0, "maxResults": 50,
+            "issues": "[{ key, id, url, summary, status, assignee: { displayName, accountId }, priority, type, created, updated }]"
+        }})),
+        ("issues show", serde_json::json!({ "json_shape": {
+            "key": "PROJ-1", "id": "10001", "url": "https://...",
+            "summary": "...", "status": "In Progress", "type": "Bug", "priority": "High",
+            "assignee": { "displayName": "Alice", "accountId": "abc123" },
+            "reporter": { "displayName": "Bob", "accountId": "xyz" },
+            "labels": ["backend"], "description": "...",
+            "created": "2024-01-01", "updated": "2024-01-02",
+            "comments": "[{ id, author: { displayName, accountId }, body, created, updated }]",
+            "issueLinks": "[{ id, sentence, type: { name, inward, outward }, outwardIssue, inwardIssue }]"
+        }})),
+        ("issues create", serde_json::json!({ "json_shape": {
+            "key": "PROJ-1", "id": "10001", "url": "https://...",
+            "sprintId": "(present when --sprint used)", "sprintName": "(present when --sprint used)"
+        }})),
+        ("issues update", serde_json::json!({ "json_shape": { "key": "PROJ-1", "updated": true } })),
+        ("issues move", serde_json::json!({ "json_shape": { "issue": "PROJ-1", "sprintId": 5, "sprintName": "Sprint 1" } })),
+        ("issues comment", serde_json::json!({ "json_shape": {
+            "id": "10042", "issue": "PROJ-1", "url": "https://...", "author": "Alice", "created": "2024-01-01"
+        }})),
+        ("issues transition", serde_json::json!({ "json_shape": {
+            "issue": "PROJ-1", "transition": "Start Progress", "status": "In Progress", "id": "21"
+        }})),
+        ("issues list-transitions", serde_json::json!({ "json_shape": [
+            { "id": "21", "name": "In Progress", "to": { "name": "In Progress", "statusCategory": { "key": "indeterminate", "name": "In Progress" } } }
+        ]})),
+        ("issues assign", serde_json::json!({ "json_shape": { "issue": "PROJ-1", "accountId": "abc123" } })),
+        ("issues link-types", serde_json::json!({ "json_shape": [
+            { "id": "1", "name": "Blocks", "inward": "is blocked by", "outward": "blocks" }
+        ]})),
+        ("issues link", serde_json::json!({ "json_shape": { "from": "PROJ-1", "to": "PROJ-2", "type": "Relates" } })),
+        ("issues unlink", serde_json::json!({ "json_shape": { "linkId": "10001" } })),
+        ("users search", serde_json::json!({ "json_shape": { "total": "N", "users": "[{ accountId, displayName, email }]" } })),
+        ("boards list", serde_json::json!({ "json_shape": { "total": "N", "boards": "[{ id, name, type }]" } })),
+        ("sprints list", serde_json::json!({ "json_shape": {
+            "total": "N", "sprints": "[{ id, name, state, boardId, boardName, startDate, endDate, completeDate }]"
+        }})),
+        ("fields list", serde_json::json!({ "json_shape": { "total": "N", "fields": "[{ id, name, custom, type }]" } })),
+        ("projects list", serde_json::json!({ "json_shape": { "total": "N", "projects": "[{ key, name, id, type }]" } })),
+        ("projects show", serde_json::json!({ "json_shape": { "id": "10001", "key": "PROJ", "name": "My Project", "type": "software" } })),
+        ("search", serde_json::json!({ "json_shape": { "total": "N", "startAt": 0, "maxResults": 50, "issues": "[...]" } })),
+        ("myself", serde_json::json!({ "json_shape": { "accountId": "abc123", "displayName": "Alice" } })),
+        ("config show", serde_json::json!({ "json_shape": {
+            "configPath": "/path/to/config.toml", "host": "example.atlassian.net",
+            "email": "me@example.com", "tokenMasked": "***abcd"
+        }})),
+        ("config init", serde_json::json!({ "json_shape": init_shape })),
+        ("init", serde_json::json!({ "alias_for": "config init", "json_shape": init_shape })),
+    ]
+    .into_iter()
+    .collect();
+
+    // Arg IDs of global flags — excluded from per-command flag lists.
+    let global_ids: HashSet<&str> = ["json", "quiet", "host", "email", "profile"]
+        .iter()
+        .copied()
+        .collect();
+
+    let root = Cli::command();
+    let commands = walk_commands(&root, &[], &annotations, &global_ids);
+
     serde_json::json!({
         "name": "jira",
         "version": env!("CARGO_PKG_VERSION"),
@@ -413,14 +661,12 @@ fn schema_json() -> serde_json::Value {
                 "Provide host and email via CLI flags, environment variables, or the config file at {config_path}. Provide the API token via JIRA_TOKEN or that config file."
             ),
             "token_instructions": "https://id.atlassian.com/manage-profile/security/api-tokens",
-            "required_fields": ["host", "email", "token"],
+            "required_fields": ["host", "token"],
+            "email_note": "email is required for basic auth (Jira Cloud) but not for pat auth (Jira Data Center/Server)",
             "config_file": {
                 "path": config_path,
                 "description": config_path_description,
-                "profile_selector": {
-                    "flag": "--profile",
-                    "env": "JIRA_PROFILE"
-                }
+                "profile_selector": { "flag": "--profile", "env": "JIRA_PROFILE" }
             },
             "resolution_order": {
                 "host": ["--host", "JIRA_HOST", "config profile/default host"],
@@ -431,8 +677,8 @@ fn schema_json() -> serde_json::Value {
             },
             "env": [
                 { "name": "JIRA_HOST", "description": "Atlassian domain override", "required": false },
-                { "name": "JIRA_EMAIL", "description": "Account email override (not required when auth_type=pat)", "required": false },
-                { "name": "JIRA_TOKEN", "description": "API token override (env/config only)", "required": false },
+                { "name": "JIRA_EMAIL", "description": "Account email (not required when auth_type=pat)", "required": false },
+                { "name": "JIRA_TOKEN", "description": "API token (env/config only)", "required": false },
                 { "name": "JIRA_PROFILE", "description": "Config profile", "required": false },
                 { "name": "JIRA_AUTH_TYPE", "description": "Authentication type: 'basic' (default, Jira Cloud) or 'pat' (Personal Access Token, Jira Data Center/Server)", "required": false },
                 { "name": "JIRA_API_VERSION", "description": "Jira REST API version: 3 (default, Cloud) or 2 (Data Center/Server)", "required": false }
@@ -457,161 +703,129 @@ fn schema_json() -> serde_json::Value {
         "json_notes": {
             "assignee_field": "JSON assignee is { displayName, accountId }. Use accountId with 'issues assign --assignee'.",
             "type_field": "JSON 'type' is normalized from Jira's 'issuetype' field.",
-            "pagination": "'issues list' and 'search' JSON includes total/startAt/maxResults for pagination. Use --offset to page."
+            "issue_links": "issueLinks[].sentence is a plain-English summary e.g. 'PROJ-1 blocks PROJ-2'. Use it instead of parsing inward/outward fields.",
+            "pagination": "'issues list' and 'search' JSON includes total/startAt/maxResults. Use --offset to page through results.",
+            "sprint_fields": "sprintId and sprintName are only present in 'issues create' output when --sprint is used."
         },
-        "commands": [
-            {
-                "name": "issues list",
-                "description": "List issues with optional filters; results ordered by last updated",
-                "flags": [
-                    { "name": "--project", "short": "-p", "description": "Filter by project key", "required": false },
-                    { "name": "--status", "short": "-s", "description": "Filter by status", "required": false },
-                    { "name": "--assignee", "short": "-a", "description": "Filter by assignee ('me' = current user)", "required": false },
-                    { "name": "--sprint", "description": "Filter by sprint name or 'active' for open sprints", "required": false },
-                    { "name": "--jql", "description": "Additional JQL clause to append", "required": false },
-                    { "name": "--limit", "short": "-n", "default": 50, "description": "Maximum results", "required": false },
-                    { "name": "--offset", "default": 0, "description": "Skip first N results for pagination", "required": false },
-                ],
-                "json_shape": { "total": "N", "startAt": 0, "maxResults": 50, "issues": "[...]" }
-            },
-            {
-                "name": "issues show <key>",
-                "description": "Show full issue detail including description and all comments",
-                "args": [{ "name": "key", "description": "Issue key, e.g. PROJ-123", "required": true }],
-                "flags": [
-                    { "name": "--open", "description": "Open the issue in your default browser", "required": false }
-                ]
-            },
-            {
-                "name": "issues create",
-                "description": "Create a new issue. Returns key, id, url.",
-                "flags": [
-                    { "name": "--project", "short": "-p", "description": "Project key", "required": true },
-                    { "name": "--issue-type", "short": "-t", "default": "Task", "description": "Issue type", "required": false },
-                    { "name": "--summary", "short": "-s", "description": "Issue summary", "required": true },
-                    { "name": "--description", "short": "-d", "description": "Issue description (plain text)", "required": false },
-                    { "name": "--priority", "description": "Priority (e.g. High, Medium, Low)", "required": false },
-                    { "name": "--labels", "description": "Labels to apply (repeatable)", "required": false },
-                    { "name": "--assignee", "description": "Account ID or 'me' to self-assign", "required": false },
-                ]
-            },
-            {
-                "name": "issues update <key>",
-                "description": "Update fields on an existing issue. At least one field required.",
-                "args": [{ "name": "key", "description": "Issue key", "required": true }],
-                "flags": [
-                    { "name": "--summary", "description": "New summary", "required": false },
-                    { "name": "--description", "description": "New description (plain text)", "required": false },
-                    { "name": "--priority", "description": "New priority (e.g. High, Medium, Low)", "required": false },
-                ]
-            },
-            {
-                "name": "issues comment <key>",
-                "description": "Add a comment. Returns id, url, author, created.",
-                "args": [{ "name": "key", "description": "Issue key", "required": true }],
-                "flags": [
-                    { "name": "--body", "short": "-b", "description": "Comment body (plain text)", "required": true },
-                ]
-            },
-            {
-                "name": "issues transition <key>",
-                "description": "Move an issue to a new workflow status. Matches by name (case-insensitive) or ID.",
-                "args": [{ "name": "key", "description": "Issue key", "required": true }],
-                "flags": [
-                    { "name": "--to", "description": "Target status name or transition ID", "required": true },
-                ]
-            },
-            {
-                "name": "issues list-transitions <key>",
-                "description": "List available workflow transitions. Use before 'issues transition' if unsure of names.",
-                "args": [{ "name": "key", "description": "Issue key", "required": true }],
-                "json_shape": [{ "id": "21", "name": "In Progress", "to": { "name": "In Progress", "statusCategory": { "key": "indeterminate", "name": "In Progress" } } }]
-            },
-            {
-                "name": "issues assign <key>",
-                "description": "Assign an issue. Use 'me' to self-assign, 'none' to unassign, or an accountId.",
-                "args": [{ "name": "key", "description": "Issue key", "required": true }],
-                "flags": [
-                    { "name": "--assignee", "description": "accountId, 'me', or 'none'", "required": true },
-                ]
-            },
-            {
-                "name": "projects list",
-                "description": "List all accessible Jira projects (all pages fetched automatically)",
-                "json_shape": { "total": "N", "projects": "[{ key, name, id, type }]" }
-            },
-            {
-                "name": "projects show <key>",
-                "description": "Show details for a single project",
-                "args": [{ "name": "key", "description": "Project key", "required": true }]
-            },
-            {
-                "name": "search <jql>",
-                "description": "Search issues with raw JQL. JQL is passed verbatim — no ORDER BY is appended. Same JSON shape as 'issues list'.",
-                "args": [{ "name": "jql", "description": "JQL query string", "required": true }],
-                "flags": [
-                    { "name": "--limit", "short": "-n", "default": 50, "description": "Maximum results", "required": false },
-                    { "name": "--offset", "default": 0, "description": "Skip first N results for pagination", "required": false },
-                ]
-            },
-            {
-                "name": "myself",
-                "description": "Show the authenticated user's accountId and displayName. Use accountId with 'issues assign --assignee'.",
-                "json_shape": { "accountId": "...", "displayName": "..." }
-            },
-            {
-                "name": "config show",
-                "description": "Show resolved config (token masked)",
-                "json_shape": {
-                    "configPath": "/path/to/config.toml",
-                    "host": "example.atlassian.net",
-                    "email": "me@example.com",
-                    "tokenMasked": "***abcd"
-                }
-            },
-            {
-                "name": "config init",
-                "description": "Print or emit example config file and API token instructions",
-                "json_shape": {
-                    "configPath": "/path/to/config.toml",
-                    "pathResolution": config_path_description,
-                    "tokenInstructions": "https://id.atlassian.com/manage-profile/security/api-tokens",
-                    "recommendedPermissions": permission_advice,
-                    "example": {
-                        "default": { "host": "...", "email": "...", "token": "..." },
-                        "profiles": { "work": { "host": "...", "email": "...", "token": "..." } }
-                    }
-                }
-            },
-            {
-                "name": "init",
-                "description": "Alias for `config init`",
-                "alias_for": "config init",
-                "json_shape": {
-                    "configPath": "/path/to/config.toml",
-                    "pathResolution": config_path_description,
-                    "tokenInstructions": "https://id.atlassian.com/manage-profile/security/api-tokens",
-                    "recommendedPermissions": permission_advice,
-                    "example": {
-                        "default": { "host": "...", "email": "...", "token": "..." },
-                        "profiles": { "work": { "host": "...", "email": "...", "token": "..." } }
-                    }
-                }
-            },
-            {
-                "name": "schema",
-                "description": "Dump this document as JSON for agent introspection"
-            },
-            {
-                "name": "completions <shell>",
-                "description": "Generate shell completions",
-                "args": [{ "name": "shell", "description": "bash, zsh, fish, powershell, or elvish", "required": true }],
-                "flags": [
-                    { "name": "--install", "description": "Install completions for supported shells (bash, zsh, fish). PowerShell and elvish must be redirected manually.", "required": false }
-                ]
-            },
-        ]
+        "commands": commands
     })
+}
+
+/// Walk the clap command tree and emit a schema entry for every leaf command.
+///
+/// Intermediate subcommand groups (e.g. `issues`, `projects`) are not emitted;
+/// only leaf commands that perform an action produce an entry. Command names are
+/// built as space-joined paths (e.g. `"issues list"`). Positional argument names
+/// are appended in angle brackets to form the display name (e.g. `"issues show <key>"`).
+fn walk_commands(
+    cmd: &clap::Command,
+    path: &[String],
+    annotations: &std::collections::HashMap<&str, serde_json::Value>,
+    global_ids: &std::collections::HashSet<&str>,
+) -> Vec<serde_json::Value> {
+    let subs: Vec<_> = cmd
+        .get_subcommands()
+        .filter(|s| s.get_name() != "help")
+        .collect();
+
+    if subs.is_empty() {
+        // Leaf command — emit a schema entry.
+        let positionals: Vec<_> = cmd.get_arguments().filter(|a| a.is_positional()).collect();
+        let flags: Vec<_> = cmd
+            .get_arguments()
+            .filter(|a| {
+                !a.is_positional()
+                    && a.get_long() != Some("help")
+                    && a.get_long() != Some("version")
+                    && !global_ids.contains(a.get_id().as_str())
+            })
+            .collect();
+
+        let base_path = path.join(" ");
+        let display_name = if positionals.is_empty() {
+            base_path.clone()
+        } else {
+            let suffix: Vec<String> = positionals
+                .iter()
+                .map(|a| format!("<{}>", a.get_id().as_str()))
+                .collect();
+            format!("{base_path} {}", suffix.join(" "))
+        };
+
+        let mut entry = serde_json::Map::new();
+        entry.insert("name".into(), serde_json::json!(display_name));
+        entry.insert(
+            "description".into(),
+            serde_json::json!(cmd.get_about().map(|s| s.to_string()).unwrap_or_default()),
+        );
+
+        let ann = annotations.get(base_path.as_str());
+
+        if let Some(alias) = ann.and_then(|a| a.get("alias_for")) {
+            entry.insert("alias_for".into(), alias.clone());
+        }
+
+        if !positionals.is_empty() {
+            let args: Vec<serde_json::Value> = positionals
+                .iter()
+                .map(|a| {
+                    serde_json::json!({
+                        "name": a.get_id().as_str(),
+                        "description": a.get_help().map(|s| s.to_string()).unwrap_or_default(),
+                        "required": a.is_required_set(),
+                    })
+                })
+                .collect();
+            entry.insert("args".into(), serde_json::json!(args));
+        }
+
+        if !flags.is_empty() {
+            let flag_entries: Vec<serde_json::Value> = flags
+                .iter()
+                .map(|a| {
+                    let long_name = a
+                        .get_long()
+                        .map(|l| format!("--{l}"))
+                        .unwrap_or_else(|| format!("--{}", a.get_id().as_str().replace('_', "-")));
+                    let mut f = serde_json::Map::new();
+                    f.insert("name".into(), serde_json::json!(long_name));
+                    if let Some(short) = a.get_short() {
+                        f.insert("short".into(), serde_json::json!(format!("-{short}")));
+                    }
+                    f.insert(
+                        "description".into(),
+                        serde_json::json!(a.get_help().map(|s| s.to_string()).unwrap_or_default()),
+                    );
+                    f.insert("required".into(), serde_json::json!(a.is_required_set()));
+                    if !a.get_default_values().is_empty() {
+                        let dv = a.get_default_values()[0].to_string_lossy();
+                        if let Ok(n) = dv.parse::<i64>() {
+                            f.insert("default".into(), serde_json::json!(n));
+                        } else {
+                            f.insert("default".into(), serde_json::json!(dv.as_ref()));
+                        }
+                    }
+                    serde_json::Value::Object(f)
+                })
+                .collect();
+            entry.insert("flags".into(), serde_json::json!(flag_entries));
+        }
+
+        if let Some(shape) = ann.and_then(|a| a.get("json_shape")) {
+            entry.insert("json_shape".into(), shape.clone());
+        }
+
+        vec![serde_json::Value::Object(entry)]
+    } else {
+        // Intermediate group — recurse into subcommands.
+        subs.iter()
+            .flat_map(|sub| {
+                let mut new_path = path.to_vec();
+                new_path.push(sub.get_name().to_string());
+                walk_commands(sub, &new_path, annotations, global_ids)
+            })
+            .collect()
+    }
 }
 
 fn handle_completions(
@@ -749,9 +963,15 @@ mod tests {
             auth["config_file"]["description"].as_str(),
             Some(jira_cli::config::schema_config_path_description())
         );
+        // email is not required when using PAT auth, so required_fields only
+        // lists the fields that are always mandatory.
         assert_eq!(
             auth["required_fields"],
-            serde_json::json!(["host", "email", "token"])
+            serde_json::json!(["host", "token"])
+        );
+        assert!(
+            auth["email_note"].as_str().is_some(),
+            "schema must explain when email is required"
         );
 
         let auth_env = auth["env"].as_array().unwrap();
@@ -794,5 +1014,69 @@ mod tests {
         let err =
             jira_cli::config::show(&OutputConfig::new(true, true), None, None, None).unwrap_err();
         assert!(matches!(err, ApiError::InvalidInput(_)));
+    }
+
+    #[test]
+    fn parse_field_number_value() {
+        let (key, val) = parse_field("customfield_10106=8").unwrap();
+        assert_eq!(key, "customfield_10106");
+        assert_eq!(val, serde_json::json!(8));
+        assert!(val.is_number());
+    }
+
+    #[test]
+    fn parse_field_float_value() {
+        let (_key, val) = parse_field("customfield_10106=3.5").unwrap();
+        assert_eq!(val, serde_json::json!(3.5));
+    }
+
+    #[test]
+    fn parse_field_bool_value() {
+        let (_, val) = parse_field("customfield_foo=true").unwrap();
+        assert_eq!(val, serde_json::json!(true));
+        let (_, val2) = parse_field("customfield_foo=false").unwrap();
+        assert_eq!(val2, serde_json::json!(false));
+    }
+
+    #[test]
+    fn parse_field_string_value() {
+        let (key, val) = parse_field("customfield_10014=PROJ-1").unwrap();
+        assert_eq!(key, "customfield_10014");
+        assert_eq!(val, serde_json::json!("PROJ-1"));
+        assert!(val.is_string());
+    }
+
+    #[test]
+    fn parse_field_json_object_value() {
+        let (_, val) = parse_field(r#"customfield_10080={"id":"10000"}"#).unwrap();
+        assert_eq!(val["id"], "10000");
+    }
+
+    #[test]
+    fn parse_field_json_array_value() {
+        let (_, val) = parse_field(r#"labels=["backend","urgent"]"#).unwrap();
+        assert_eq!(val[0], "backend");
+        assert_eq!(val[1], "urgent");
+    }
+
+    #[test]
+    fn parse_field_plain_string_with_spaces() {
+        // A value that is not valid JSON falls back to a plain string
+        let (_, val) = parse_field("summary=hello world").unwrap();
+        assert_eq!(val, serde_json::json!("hello world"));
+    }
+
+    #[test]
+    fn parse_field_missing_equals_returns_error() {
+        let err = parse_field("noequalssign").unwrap_err();
+        assert!(err.contains("key=value"));
+    }
+
+    #[test]
+    fn parse_field_value_with_equals_in_it() {
+        // split_once ensures only the first '=' splits key from value
+        let (key, val) = parse_field("customfield_10014=A=B").unwrap();
+        assert_eq!(key, "customfield_10014");
+        assert_eq!(val, serde_json::json!("A=B"));
     }
 }
