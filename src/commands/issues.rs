@@ -129,10 +129,7 @@ pub async fn comments(client: &JiraClient, out: &OutputConfig, key: &str) -> Res
 }
 
 /// Fetch every page of a JQL search, returning all issues.
-pub(crate) async fn fetch_all_issues(
-    client: &JiraClient,
-    jql: &str,
-) -> Result<Vec<Issue>, ApiError> {
+pub async fn fetch_all_issues(client: &JiraClient, jql: &str) -> Result<Vec<Issue>, ApiError> {
     const PAGE_SIZE: usize = 100;
     let mut all: Vec<Issue> = Vec::new();
     let mut offset = 0;

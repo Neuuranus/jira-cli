@@ -135,7 +135,7 @@ enum IssuesCommand {
         assignee: Option<String>,
 
         /// Filter by issue type (e.g. Bug, Story, Task)
-        #[arg(short = 't', long)]
+        #[arg(short = 't', long = "type")]
         issue_type: Option<String>,
 
         /// Filter by sprint name or use "active" for open sprints
@@ -209,7 +209,7 @@ enum IssuesCommand {
         project: String,
 
         /// Issue type (e.g. Bug, Story, Task)
-        #[arg(short = 't', long, default_value = "Task")]
+        #[arg(short = 't', long = "type", default_value = "Task")]
         issue_type: String,
 
         /// Issue summary

@@ -1,4 +1,4 @@
-.PHONY: build release test lint fmt check clean install release-patch release-minor release-major
+.PHONY: build release test test-e2e lint fmt check clean install release-patch release-minor release-major
 
 build:
 	cargo build
@@ -7,7 +7,14 @@ release:
 	cargo build --release
 
 test:
-	cargo test
+	cargo nextest run --test integration
+	cargo nextest run --lib --bin jira
+
+# Run end-to-end tests against a real Jira instance.
+# Requires: JIRA_E2E_HOST, JIRA_E2E_EMAIL, JIRA_E2E_TOKEN
+# Optional: JIRA_E2E_PROJECT (default: TST)
+test-e2e:
+	cargo nextest run --test e2e
 
 lint:
 	cargo fmt -- --check

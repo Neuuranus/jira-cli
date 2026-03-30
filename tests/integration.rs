@@ -2085,6 +2085,12 @@ async fn log_work_with_comment_includes_body_in_payload() {
     )
     .await
     .unwrap();
+
+    let requests = server.received_requests().await.unwrap();
+    let body: serde_json::Value = serde_json::from_slice(&requests[0].body).unwrap();
+    assert_eq!(body["timeSpent"], "30m");
+    // v3 sends ADF comment; the doc type should be present
+    assert_eq!(body["comment"]["type"], "doc");
 }
 
 // ── Bulk transition ───────────────────────────────────────────────────────────
@@ -2245,4 +2251,9 @@ async fn create_issue_with_parent_includes_parent_field() {
     )
     .await
     .unwrap();
+
+    let requests = server.received_requests().await.unwrap();
+    let body: serde_json::Value = serde_json::from_slice(&requests[0].body).unwrap();
+    assert_eq!(body["fields"]["parent"]["key"], "PROJ-5");
+    assert_eq!(body["fields"]["issuetype"]["name"], "Subtask");
 }
