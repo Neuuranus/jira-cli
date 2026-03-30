@@ -293,7 +293,8 @@ pub fn init(out: &OutputConfig) {
             &serde_json::to_string_pretty(&serde_json::json!({
                 "configPath": path,
                 "pathResolution": path_resolution,
-                "tokenInstructions": "https://id.atlassian.com/manage-profile/security/api-tokens",
+                "cloudTokenInstructions": "https://id.atlassian.com/manage-profile/security/api-tokens",
+                "dcPatInstructions": "Log in to your Jira DC/Server instance → profile → Personal Access Tokens. Set auth_type = \"pat\" and api_version = 2 in your config.",
                 "recommendedPermissions": permission_advice,
                 "example": example,
             }))
@@ -303,7 +304,54 @@ pub fn init(out: &OutputConfig) {
     }
 
     out.print_data(&format!(
-        "Create or edit: {}\nPath resolution: {}\n\nExample config:\n\n[default]\nhost        = \"mycompany.atlassian.net\"\nemail       = \"me@example.com\"\ntoken       = \"your-api-token\"\nauth_type   = \"basic\"   # or \"pat\" for Jira Data Center / Server\napi_version = 3         # or 2 for Jira Data Center / Server\n\n# Optional named profiles:\n# [profiles.work]\n# host  = \"work.atlassian.net\"\n# email = \"me@work.com\"\n# token = \"work-token\"\n\n# Example Jira Data Center / Server profile (PAT auth):\n# [profiles.datacenter]\n# host        = \"jira.mycompany.com\"\n# token       = \"your-personal-access-token\"\n# auth_type   = \"pat\"\n# api_version = 2\n\nGet your API token at: https://id.atlassian.com/manage-profile/security/api-tokens\n\nPermissions: {}",
+        "\
+Create or edit: {}
+Path resolution: {}
+
+── Jira Cloud ────────────────────────────────────────────────────────────────
+
+[default]
+host      = \"mycompany.atlassian.net\"
+email     = \"me@example.com\"
+token     = \"your-api-token\"
+
+Get your API token at:
+  https://id.atlassian.com/manage-profile/security/api-tokens
+
+── Jira Data Center / Server ─────────────────────────────────────────────────
+
+[profiles.dc]
+host        = \"jira.mycompany.com\"
+token       = \"your-personal-access-token\"
+auth_type   = \"pat\"
+api_version = 2
+
+Create a Personal Access Token in Jira DC/Server:
+  1. Log in to your Jira instance
+  2. Go to your profile → Personal Access Tokens
+     (or navigate to: http://<your-host>/secure/ViewProfile.jspa)
+  3. Click \"Create token\", give it a name and expiry
+  4. Copy the token value — it is only shown once
+
+Use with: jira --profile dc <command>
+      or: JIRA_PROFILE=dc jira <command>
+
+── Multiple profiles ─────────────────────────────────────────────────────────
+
+[default]
+host  = \"mycompany.atlassian.net\"
+email = \"me@example.com\"
+token = \"cloud-api-token\"
+
+[profiles.dc]
+host        = \"jira.mycompany.com\"
+token       = \"dc-personal-access-token\"
+auth_type   = \"pat\"
+api_version = 2
+
+── Permissions ───────────────────────────────────────────────────────────────
+
+{}",
         path.display(),
         path_resolution,
         permission_advice,
