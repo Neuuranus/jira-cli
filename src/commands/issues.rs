@@ -217,6 +217,7 @@ pub async fn create(
     labels: Option<&[&str]>,
     assignee: Option<&str>,
     sprint: Option<&str>,
+    parent: Option<&str>,
     custom_fields: &[(String, serde_json::Value)],
 ) -> Result<(), ApiError> {
     let resp = client
@@ -228,12 +229,16 @@ pub async fn create(
             priority,
             labels,
             assignee,
+            parent,
             custom_fields,
         )
         .await?;
     let url = client.browse_url(&resp.key);
 
     let mut result = serde_json::json!({ "key": resp.key, "id": resp.id, "url": url });
+    if let Some(p) = parent {
+        result["parent"] = serde_json::json!(p);
+    }
     if let Some(s) = sprint {
         let resolved = client.resolve_sprint(s).await?;
         client.move_issue_to_sprint(&resp.key, resolved.id).await?;
@@ -464,6 +469,223 @@ pub async fn unlink(
         &serde_json::json!({ "linkId": link_id }),
         &format!("Removed link {link_id}"),
     );
+    Ok(())
+}
+
+/// Log work (time) on an issue.
+pub async fn log_work(
+    client: &JiraClient,
+    out: &OutputConfig,
+    key: &str,
+    time_spent: &str,
+    comment: Option<&str>,
+    started: Option<&str>,
+) -> Result<(), ApiError> {
+    let entry = client.log_work(key, time_spent, comment, started).await?;
+    out.print_result(
+        &serde_json::json!({
+            "id": entry.id,
+            "issue": key,
+            "timeSpent": entry.time_spent,
+            "timeSpentSeconds": entry.time_spent_seconds,
+            "author": entry.author.display_name,
+            "started": entry.started,
+            "created": entry.created,
+        }),
+        &format!("Logged {} on {key}", entry.time_spent),
+    );
+    Ok(())
+}
+
+/// Transition all issues matching a JQL query to a new status.
+pub async fn bulk_transition(
+    client: &JiraClient,
+    out: &OutputConfig,
+    jql: &str,
+    to: &str,
+    dry_run: bool,
+) -> Result<(), ApiError> {
+    let issues = fetch_all_issues(client, jql).await?;
+
+    if issues.is_empty() {
+        out.print_message("No issues matched the query.");
+        return Ok(());
+    }
+
+    let mut results: Vec<serde_json::Value> = Vec::new();
+    let mut succeeded = 0usize;
+    let mut failed = 0usize;
+
+    for issue in &issues {
+        if dry_run {
+            results.push(serde_json::json!({
+                "key": issue.key,
+                "status": issue.status(),
+                "action": "would transition",
+                "to": to,
+            }));
+            continue;
+        }
+
+        let transitions = client.get_transitions(&issue.key).await?;
+        let matched = transitions.iter().find(|t| {
+            t.name.eq_ignore_ascii_case(to)
+                || t.to
+                    .as_ref()
+                    .is_some_and(|tt| tt.name.eq_ignore_ascii_case(to))
+                || t.id == to
+        });
+
+        match matched {
+            Some(t) => match client.do_transition(&issue.key, &t.id).await {
+                Ok(()) => {
+                    succeeded += 1;
+                    results.push(serde_json::json!({
+                        "key": issue.key,
+                        "from": issue.status(),
+                        "to": to,
+                        "ok": true,
+                    }));
+                }
+                Err(e) => {
+                    failed += 1;
+                    results.push(serde_json::json!({
+                        "key": issue.key,
+                        "ok": false,
+                        "error": e.to_string(),
+                    }));
+                }
+            },
+            None => {
+                failed += 1;
+                results.push(serde_json::json!({
+                    "key": issue.key,
+                    "ok": false,
+                    "error": format!("transition '{to}' not available"),
+                }));
+            }
+        }
+    }
+
+    if out.json {
+        out.print_data(
+            &serde_json::to_string_pretty(&serde_json::json!({
+                "dryRun": dry_run,
+                "total": issues.len(),
+                "succeeded": succeeded,
+                "failed": failed,
+                "issues": results,
+            }))
+            .expect("failed to serialize JSON"),
+        );
+    } else if dry_run {
+        render_issue_table(&issues, out);
+        out.print_message(&format!(
+            "Dry run: {} issues would be transitioned to '{to}'",
+            issues.len()
+        ));
+    } else {
+        out.print_message(&format!(
+            "Transitioned {succeeded}/{} issues to '{to}'{}",
+            issues.len(),
+            if failed > 0 {
+                format!(" ({failed} failed)")
+            } else {
+                String::new()
+            }
+        ));
+    }
+    Ok(())
+}
+
+/// Assign all issues matching a JQL query to a user.
+pub async fn bulk_assign(
+    client: &JiraClient,
+    out: &OutputConfig,
+    jql: &str,
+    assignee: &str,
+    dry_run: bool,
+) -> Result<(), ApiError> {
+    // Resolve "me" once before the loop.
+    let account_id: Option<String> = match assignee {
+        "me" => {
+            let me = client.get_myself().await?;
+            Some(me.account_id)
+        }
+        "none" | "unassign" => None,
+        id => Some(id.to_string()),
+    };
+
+    let issues = fetch_all_issues(client, jql).await?;
+
+    if issues.is_empty() {
+        out.print_message("No issues matched the query.");
+        return Ok(());
+    }
+
+    let mut results: Vec<serde_json::Value> = Vec::new();
+    let mut succeeded = 0usize;
+    let mut failed = 0usize;
+
+    for issue in &issues {
+        if dry_run {
+            results.push(serde_json::json!({
+                "key": issue.key,
+                "currentAssignee": issue.assignee(),
+                "action": "would assign",
+                "to": assignee,
+            }));
+            continue;
+        }
+
+        match client.assign_issue(&issue.key, account_id.as_deref()).await {
+            Ok(()) => {
+                succeeded += 1;
+                results.push(serde_json::json!({
+                    "key": issue.key,
+                    "assignee": assignee,
+                    "ok": true,
+                }));
+            }
+            Err(e) => {
+                failed += 1;
+                results.push(serde_json::json!({
+                    "key": issue.key,
+                    "ok": false,
+                    "error": e.to_string(),
+                }));
+            }
+        }
+    }
+
+    if out.json {
+        out.print_data(
+            &serde_json::to_string_pretty(&serde_json::json!({
+                "dryRun": dry_run,
+                "total": issues.len(),
+                "succeeded": succeeded,
+                "failed": failed,
+                "issues": results,
+            }))
+            .expect("failed to serialize JSON"),
+        );
+    } else if dry_run {
+        render_issue_table(&issues, out);
+        out.print_message(&format!(
+            "Dry run: {} issues would be assigned to '{assignee}'",
+            issues.len()
+        ));
+    } else {
+        out.print_message(&format!(
+            "Assigned {succeeded}/{} issues to '{assignee}'{}",
+            issues.len(),
+            if failed > 0 {
+                format!(" ({failed} failed)")
+            } else {
+                String::new()
+            }
+        ));
+    }
     Ok(())
 }
 

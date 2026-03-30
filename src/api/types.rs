@@ -297,6 +297,18 @@ pub struct TransitionsResponse {
     pub transitions: Vec<Transition>,
 }
 
+/// A single worklog entry on an issue.
+#[derive(Debug, Deserialize, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct WorklogEntry {
+    pub id: String,
+    pub author: UserField,
+    pub time_spent: String,
+    pub time_spent_seconds: u64,
+    pub started: String,
+    pub created: String,
+}
+
 /// Response from creating an issue.
 #[derive(Debug, Deserialize, Serialize)]
 pub struct CreateIssueResponse {

@@ -246,6 +246,7 @@ impl JiraClient {
 
     /// Create a new issue.
     #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)]
     pub async fn create_issue(
         &self,
         project_key: &str,
@@ -255,6 +256,7 @@ impl JiraClient {
         priority: Option<&str>,
         labels: Option<&[&str]>,
         assignee: Option<&str>,
+        parent: Option<&str>,
         custom_fields: &[(String, serde_json::Value)],
     ) -> Result<CreateIssueResponse, ApiError> {
         let mut fields = serde_json::json!({
@@ -277,12 +279,37 @@ impl JiraClient {
         if let Some(id) = assignee {
             fields["assignee"] = self.assignee_payload(id);
         }
+        if let Some(parent_key) = parent {
+            fields["parent"] = serde_json::json!({ "key": parent_key });
+        }
         for (key, value) in custom_fields {
             fields[key] = value.clone();
         }
 
         self.post("issue", &serde_json::json!({ "fields": fields }))
             .await
+    }
+
+    /// Log work on an issue.
+    ///
+    /// `time_spent` uses Jira duration format (e.g. `2h 30m`, `1d`, `30m`).
+    /// `started` is an ISO-8601 datetime string; when `None` the server uses now.
+    pub async fn log_work(
+        &self,
+        key: &str,
+        time_spent: &str,
+        comment: Option<&str>,
+        started: Option<&str>,
+    ) -> Result<WorklogEntry, ApiError> {
+        validate_issue_key(key)?;
+        let mut payload = serde_json::json!({ "timeSpent": time_spent });
+        if let Some(c) = comment {
+            payload["comment"] = self.make_body(c);
+        }
+        if let Some(s) = started {
+            payload["started"] = serde_json::Value::String(s.to_string());
+        }
+        self.post(&format!("issue/{key}/worklog"), &payload).await
     }
 
     /// Add a comment to an issue.

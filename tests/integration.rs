@@ -352,6 +352,7 @@ async fn create_issue_posts_correct_payload() {
             None,
             None,
             None,
+            None,
             &[],
         )
         .await
@@ -1422,7 +1423,9 @@ async fn create_issue_sends_custom_fields() {
         ("customfield_10014".to_string(), serde_json::json!("PROJ-1")),
     ];
     client
-        .create_issue("PROJ", "Story", "My story", None, None, None, None, &custom)
+        .create_issue(
+            "PROJ", "Story", "My story", None, None, None, None, None, &custom,
+        )
         .await
         .unwrap();
 
@@ -1583,6 +1586,7 @@ async fn create_issue_v2_assignee_uses_name_field() {
             None,
             None,
             Some("ruben"),
+            None,
             &[],
         )
         .await
@@ -1620,6 +1624,7 @@ async fn create_issue_v3_assignee_uses_account_id_field() {
             None,
             None,
             Some("abc123"),
+            None,
             &[],
         )
         .await
@@ -2017,4 +2022,227 @@ async fn issues_mine_uses_current_user_assignee_filter() {
     jira_cli::commands::issues::mine(&client, &out, None, None, None, None, 50, false)
         .await
         .unwrap();
+}
+
+// ── Worklog ───────────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn log_work_posts_to_worklog_endpoint() {
+    let server = MockServer::start().await;
+    let client = test_client(&server);
+
+    let worklog_response = serde_json::json!({
+        "id": "10200",
+        "author": { "displayName": "Alice", "accountId": "abc123" },
+        "timeSpent": "2h",
+        "timeSpentSeconds": 7200,
+        "started": "2024-01-15T09:00:00.000+0000",
+        "created": "2024-01-15T09:05:00.000+0000"
+    });
+
+    Mock::given(method("POST"))
+        .and(path("/rest/api/3/issue/PROJ-1/worklog"))
+        .respond_with(ResponseTemplate::new(201).set_body_json(worklog_response))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let out = json_out();
+    jira_cli::commands::issues::log_work(&client, &out, "PROJ-1", "2h", None, None)
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn log_work_with_comment_includes_body_in_payload() {
+    let server = MockServer::start().await;
+    let client = test_client(&server);
+
+    let worklog_response = serde_json::json!({
+        "id": "10201",
+        "author": { "displayName": "Alice", "accountId": "abc123" },
+        "timeSpent": "30m",
+        "timeSpentSeconds": 1800,
+        "started": "2024-01-15T10:00:00.000+0000",
+        "created": "2024-01-15T10:01:00.000+0000"
+    });
+
+    Mock::given(method("POST"))
+        .and(path("/rest/api/3/issue/PROJ-2/worklog"))
+        .respond_with(ResponseTemplate::new(201).set_body_json(worklog_response))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let out = json_out();
+    jira_cli::commands::issues::log_work(
+        &client,
+        &out,
+        "PROJ-2",
+        "30m",
+        Some("Fixed the flaky test"),
+        None,
+    )
+    .await
+    .unwrap();
+}
+
+// ── Bulk transition ───────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn bulk_transition_dry_run_makes_no_api_calls() {
+    let server = MockServer::start().await;
+    let client = test_client(&server);
+
+    let issues = vec![
+        issue_fixture("PROJ-1", "Issue 1", "To Do"),
+        issue_fixture("PROJ-2", "Issue 2", "To Do"),
+    ];
+
+    Mock::given(method("GET"))
+        .and(path("/rest/api/3/search"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(search_response(issues)))
+        .mount(&server)
+        .await;
+
+    // No transition calls should happen in dry-run mode (mock would fail if called)
+    let out = json_out();
+    jira_cli::commands::issues::bulk_transition(
+        &client,
+        &out,
+        "project = PROJ AND status = 'To Do'",
+        "In Progress",
+        true,
+    )
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn bulk_transition_calls_transition_for_each_issue() {
+    let server = MockServer::start().await;
+    let client = test_client(&server);
+
+    let issues = vec![issue_fixture("PROJ-1", "Issue 1", "To Do")];
+
+    Mock::given(method("GET"))
+        .and(path("/rest/api/3/search"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(search_response(issues)))
+        .mount(&server)
+        .await;
+
+    let transitions = serde_json::json!({
+        "transitions": [
+            { "id": "21", "name": "In Progress", "to": { "name": "In Progress", "statusCategory": { "key": "indeterminate", "name": "In Progress" } } }
+        ]
+    });
+
+    Mock::given(method("GET"))
+        .and(path("/rest/api/3/issue/PROJ-1/transitions"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(transitions))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    Mock::given(method("POST"))
+        .and(path("/rest/api/3/issue/PROJ-1/transitions"))
+        .respond_with(ResponseTemplate::new(204))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let out = json_out();
+    jira_cli::commands::issues::bulk_transition(
+        &client,
+        &out,
+        "project = PROJ",
+        "In Progress",
+        false,
+    )
+    .await
+    .unwrap();
+}
+
+// ── Bulk assign ───────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn bulk_assign_dry_run_makes_no_api_calls() {
+    let server = MockServer::start().await;
+    let client = test_client(&server);
+
+    let issues = vec![issue_fixture("PROJ-1", "Issue 1", "Open")];
+
+    Mock::given(method("GET"))
+        .and(path("/rest/api/3/search"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(search_response(issues)))
+        .mount(&server)
+        .await;
+
+    let out = json_out();
+    jira_cli::commands::issues::bulk_assign(&client, &out, "project = PROJ", "alice123", true)
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn bulk_assign_calls_assign_for_each_issue() {
+    let server = MockServer::start().await;
+    let client = test_client(&server);
+
+    let issues = vec![issue_fixture("PROJ-1", "Issue 1", "Open")];
+
+    Mock::given(method("GET"))
+        .and(path("/rest/api/3/search"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(search_response(issues)))
+        .mount(&server)
+        .await;
+
+    Mock::given(method("PUT"))
+        .and(path("/rest/api/3/issue/PROJ-1/assignee"))
+        .respond_with(ResponseTemplate::new(204))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let out = json_out();
+    jira_cli::commands::issues::bulk_assign(&client, &out, "project = PROJ", "alice123", false)
+        .await
+        .unwrap();
+}
+
+// ── Subtask creation (--parent flag) ─────────────────────────────────────────
+
+#[tokio::test]
+async fn create_issue_with_parent_includes_parent_field() {
+    let server = MockServer::start().await;
+    let client = test_client(&server);
+
+    Mock::given(method("POST"))
+        .and(path("/rest/api/3/issue"))
+        .respond_with(ResponseTemplate::new(201).set_body_json(serde_json::json!({
+            "id": "10010",
+            "key": "PROJ-10",
+            "self": "https://test.atlassian.net/rest/api/3/issue/10010"
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let out = json_out();
+    jira_cli::commands::issues::create(
+        &client,
+        &out,
+        "PROJ",
+        "Subtask",
+        "Do a sub-thing",
+        None,
+        None,
+        None,
+        None,
+        None,
+        Some("PROJ-5"),
+        &[],
+    )
+    .await
+    .unwrap();
 }

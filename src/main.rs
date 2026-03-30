@@ -236,6 +236,10 @@ enum IssuesCommand {
         #[arg(long)]
         sprint: Option<String>,
 
+        /// Parent issue key (creates a subtask or child issue)
+        #[arg(long)]
+        parent: Option<String>,
+
         /// Custom field values as key=value pairs (e.g. --field customfield_10016=5)
         #[arg(long, value_parser = parse_field)]
         field: Vec<(String, serde_json::Value)>,
@@ -330,6 +334,54 @@ enum IssuesCommand {
     Unlink {
         /// Link ID (shown in `issues show` output and JSON)
         link_id: String,
+    },
+
+    /// Log work (time) on an issue
+    LogWork {
+        /// Issue key (e.g. PROJ-123)
+        key: String,
+
+        /// Time spent (e.g. 2h, 30m, 1d 4h)
+        #[arg(short, long)]
+        time: String,
+
+        /// Comment describing the work done
+        #[arg(short, long)]
+        comment: Option<String>,
+
+        /// When the work was started (ISO-8601, e.g. 2024-01-15T09:00:00.000+0000)
+        #[arg(long)]
+        started: Option<String>,
+    },
+
+    /// Transition all issues matching a JQL query to a new status
+    BulkTransition {
+        /// JQL query selecting the issues to transition
+        #[arg(long)]
+        jql: String,
+
+        /// Target status name or transition ID
+        #[arg(long)]
+        to: String,
+
+        /// Preview without making any changes
+        #[arg(long)]
+        dry_run: bool,
+    },
+
+    /// Assign all issues matching a JQL query to a user
+    BulkAssign {
+        /// JQL query selecting the issues to assign
+        #[arg(long)]
+        jql: String,
+
+        /// Account ID, "me" for yourself, or "none" to unassign
+        #[arg(long)]
+        assignee: String,
+
+        /// Preview without making any changes
+        #[arg(long)]
+        dry_run: bool,
     },
 }
 
@@ -508,6 +560,7 @@ async fn run(cli: Cli, out: OutputConfig) -> Result<(), Box<dyn std::error::Erro
                 labels,
                 assignee,
                 sprint,
+                parent,
                 field,
             } => {
                 let label_refs: Vec<&str> = labels.iter().map(String::as_str).collect();
@@ -535,6 +588,7 @@ async fn run(cli: Cli, out: OutputConfig) -> Result<(), Box<dyn std::error::Erro
                     labels_opt,
                     assignee_str.as_deref(),
                     sprint.as_deref(),
+                    parent.as_deref(),
                     &field,
                 )
                 .await?
@@ -579,6 +633,30 @@ async fn run(cli: Cli, out: OutputConfig) -> Result<(), Box<dyn std::error::Erro
             IssuesCommand::Unlink { link_id } => {
                 commands::issues::unlink(&client, &out, &link_id).await?
             }
+            IssuesCommand::LogWork {
+                key,
+                time,
+                comment,
+                started,
+            } => {
+                commands::issues::log_work(
+                    &client,
+                    &out,
+                    &key,
+                    &time,
+                    comment.as_deref(),
+                    started.as_deref(),
+                )
+                .await?
+            }
+            IssuesCommand::BulkTransition { jql, to, dry_run } => {
+                commands::issues::bulk_transition(&client, &out, &jql, &to, dry_run).await?
+            }
+            IssuesCommand::BulkAssign {
+                jql,
+                assignee,
+                dry_run,
+            } => commands::issues::bulk_assign(&client, &out, &jql, &assignee, dry_run).await?,
         },
 
         Command::Projects(cmd) => match cmd {
