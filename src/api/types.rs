@@ -229,8 +229,15 @@ pub fn text_to_adf(text: &str) -> serde_json::Value {
     })
 }
 
-/// Extract plain text from an Atlassian Document Format node.
+/// Extract plain text from an ADF node or a plain string value.
+///
+/// API v2 (Jira Data Center / Server) returns descriptions and comment bodies
+/// as plain JSON strings. API v3 (Jira Cloud) uses Atlassian Document Format.
+/// Both forms are handled here so the same display path works for both versions.
 pub fn extract_adf_text(node: &serde_json::Value) -> String {
+    if let Some(s) = node.as_str() {
+        return s.to_string();
+    }
     let mut buf = String::new();
     collect_text(node, &mut buf);
     buf.trim().to_string()

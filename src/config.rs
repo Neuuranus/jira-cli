@@ -4,6 +4,7 @@ use std::path::PathBuf;
 use serde::Deserialize;
 
 use crate::api::ApiError;
+use crate::api::AuthType;
 use crate::output::OutputConfig;
 
 #[derive(Debug, Deserialize, Default, Clone)]
@@ -11,6 +12,8 @@ pub struct ProfileConfig {
     pub host: Option<String>,
     pub email: Option<String>,
     pub token: Option<String>,
+    pub auth_type: Option<String>,
+    pub api_version: Option<u8>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -22,6 +25,8 @@ struct RawConfig {
     host: Option<String>,
     email: Option<String>,
     token: Option<String>,
+    auth_type: Option<String>,
+    api_version: Option<u8>,
 }
 
 impl RawConfig {
@@ -30,6 +35,12 @@ impl RawConfig {
             host: self.default.host.clone().or_else(|| self.host.clone()),
             email: self.default.email.clone().or_else(|| self.email.clone()),
             token: self.default.token.clone().or_else(|| self.token.clone()),
+            auth_type: self
+                .default
+                .auth_type
+                .clone()
+                .or_else(|| self.auth_type.clone()),
+            api_version: self.default.api_version.or(self.api_version),
         }
     }
 }
@@ -40,6 +51,8 @@ pub struct Config {
     pub host: String,
     pub email: String,
     pub token: String,
+    pub auth_type: AuthType,
+    pub api_version: u8,
 }
 
 impl Config {
@@ -64,24 +77,60 @@ impl Config {
                 )
             })?;
 
-        let email = normalize_value(email_arg)
-            .or_else(|| env_var("JIRA_EMAIL"))
-            .or_else(|| normalize_value(file_profile.email))
-            .ok_or_else(|| {
-                ApiError::InvalidInput(
-                    "No email configured. Set JIRA_EMAIL or run `jira config init`.".into(),
-                )
-            })?;
-
         let token = env_var("JIRA_TOKEN")
-            .or_else(|| normalize_value(file_profile.token))
+            .or_else(|| normalize_value(file_profile.token.clone()))
             .ok_or_else(|| {
                 ApiError::InvalidInput(
                     "No API token configured. Set JIRA_TOKEN or run `jira config init`.".into(),
                 )
             })?;
 
-        Ok(Self { host, email, token })
+        let auth_type = env_var("JIRA_AUTH_TYPE")
+            .as_deref()
+            .map(|v| {
+                if v.eq_ignore_ascii_case("pat") {
+                    AuthType::Pat
+                } else {
+                    AuthType::Basic
+                }
+            })
+            .or_else(|| {
+                file_profile.auth_type.as_deref().map(|v| {
+                    if v.eq_ignore_ascii_case("pat") {
+                        AuthType::Pat
+                    } else {
+                        AuthType::Basic
+                    }
+                })
+            })
+            .unwrap_or_default();
+
+        let api_version = env_var("JIRA_API_VERSION")
+            .and_then(|v| v.parse::<u8>().ok())
+            .or(file_profile.api_version)
+            .unwrap_or(3);
+
+        // Email is required for Basic auth; PAT auth uses a token only.
+        let email = normalize_value(email_arg)
+            .or_else(|| env_var("JIRA_EMAIL"))
+            .or_else(|| normalize_value(file_profile.email));
+
+        let email = match auth_type {
+            AuthType::Basic => email.ok_or_else(|| {
+                ApiError::InvalidInput(
+                    "No email configured. Set JIRA_EMAIL or run `jira config init`.".into(),
+                )
+            })?,
+            AuthType::Pat => email.unwrap_or_default(),
+        };
+
+        Ok(Self {
+            host,
+            email,
+            token,
+            auth_type,
+            api_version,
+        })
     }
 }
 
@@ -221,12 +270,20 @@ pub fn init(out: &OutputConfig) {
             "host": "mycompany.atlassian.net",
             "email": "me@example.com",
             "token": "your-api-token",
+            "auth_type": "basic",
+            "api_version": 3,
         },
         "profiles": {
             "work": {
                 "host": "work.atlassian.net",
                 "email": "me@work.com",
                 "token": "work-token",
+            },
+            "datacenter": {
+                "host": "jira.mycompany.com",
+                "token": "your-personal-access-token",
+                "auth_type": "pat",
+                "api_version": 2,
             }
         }
     });
@@ -246,7 +303,7 @@ pub fn init(out: &OutputConfig) {
     }
 
     out.print_data(&format!(
-        "Create or edit: {}\nPath resolution: {}\n\nExample config:\n\n[default]\nhost  = \"mycompany.atlassian.net\"\nemail = \"me@example.com\"\ntoken = \"your-api-token\"\n\n# Optional named profiles:\n# [profiles.work]\n# host  = \"work.atlassian.net\"\n# email = \"me@work.com\"\n# token = \"work-token\"\n\nGet your API token at: https://id.atlassian.com/manage-profile/security/api-tokens\n\nPermissions: {}",
+        "Create or edit: {}\nPath resolution: {}\n\nExample config:\n\n[default]\nhost        = \"mycompany.atlassian.net\"\nemail       = \"me@example.com\"\ntoken       = \"your-api-token\"\nauth_type   = \"basic\"   # or \"pat\" for Jira Data Center / Server\napi_version = 3         # or 2 for Jira Data Center / Server\n\n# Optional named profiles:\n# [profiles.work]\n# host  = \"work.atlassian.net\"\n# email = \"me@work.com\"\n# token = \"work-token\"\n\n# Example Jira Data Center / Server profile (PAT auth):\n# [profiles.datacenter]\n# host        = \"jira.mycompany.com\"\n# token       = \"your-personal-access-token\"\n# auth_type   = \"pat\"\n# api_version = 2\n\nGet your API token at: https://id.atlassian.com/manage-profile/security/api-tokens\n\nPermissions: {}",
         path.display(),
         path_resolution,
         permission_advice,

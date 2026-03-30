@@ -5,6 +5,7 @@ use serde::de::DeserializeOwned;
 use std::collections::BTreeMap;
 
 use super::ApiError;
+use super::AuthType;
 use super::types::*;
 
 pub struct JiraClient {
@@ -12,6 +13,7 @@ pub struct JiraClient {
     base_url: String,
     site_url: String,
     host: String,
+    api_version: u8,
 }
 
 const SEARCH_FIELDS: [&str; 7] = [
@@ -26,7 +28,13 @@ const SEARCH_FIELDS: [&str; 7] = [
 const SEARCH_GET_JQL_LIMIT: usize = 1500;
 
 impl JiraClient {
-    pub fn new(host: &str, email: &str, token: &str) -> Result<Self, ApiError> {
+    pub fn new(
+        host: &str,
+        email: &str,
+        token: &str,
+        auth_type: AuthType,
+        api_version: u8,
+    ) -> Result<Self, ApiError> {
         // Determine the scheme. An explicit `http://` prefix is preserved as-is
         // (useful for local testing); everything else defaults to HTTPS.
         let (scheme, domain) = if host.starts_with("http://") {
@@ -45,8 +53,13 @@ impl JiraClient {
             return Err(ApiError::Other("Host cannot be empty".into()));
         }
 
-        let credentials = BASE64.encode(format!("{email}:{token}"));
-        let auth_value = format!("Basic {credentials}");
+        let auth_value = match auth_type {
+            AuthType::Basic => {
+                let credentials = BASE64.encode(format!("{email}:{token}"));
+                format!("Basic {credentials}")
+            }
+            AuthType::Pat => format!("Bearer {token}"),
+        };
 
         let mut headers = HeaderMap::new();
         headers.insert(
@@ -61,18 +74,23 @@ impl JiraClient {
             .map_err(ApiError::Http)?;
 
         let site_url = format!("{scheme}://{domain}");
-        let base_url = format!("{site_url}/rest/api/3");
+        let base_url = format!("{site_url}/rest/api/{api_version}");
 
         Ok(Self {
             http,
             base_url,
             site_url,
             host: domain.to_string(),
+            api_version,
         })
     }
 
     pub fn host(&self) -> &str {
         &self.host
+    }
+
+    pub fn api_version(&self) -> u8 {
+        self.api_version
     }
 
     pub fn browse_base_url(&self) -> &str {
@@ -231,7 +249,7 @@ impl JiraClient {
         });
 
         if let Some(desc) = description {
-            fields["description"] = text_to_adf(desc);
+            fields["description"] = self.make_body(desc);
         }
         if let Some(p) = priority {
             fields["priority"] = serde_json::json!({ "name": p });
@@ -252,7 +270,7 @@ impl JiraClient {
     /// Add a comment to an issue.
     pub async fn add_comment(&self, key: &str, body: &str) -> Result<Comment, ApiError> {
         validate_issue_key(key)?;
-        let payload = serde_json::json!({ "body": text_to_adf(body) });
+        let payload = serde_json::json!({ "body": self.make_body(body) });
         self.post(&format!("issue/{key}/comment"), &payload).await
     }
 
@@ -300,7 +318,7 @@ impl JiraClient {
             fields.insert("summary".into(), serde_json::Value::String(s.into()));
         }
         if let Some(d) = description {
-            fields.insert("description".into(), text_to_adf(d));
+            fields.insert("description".into(), self.make_body(d));
         }
         if let Some(p) = priority {
             fields.insert("priority".into(), serde_json::json!({ "name": p }));
@@ -315,6 +333,18 @@ impl JiraClient {
             &serde_json::json!({ "fields": fields }),
         )
         .await
+    }
+
+    /// Build the appropriate body value for a description or comment field.
+    ///
+    /// API v3 (Jira Cloud) requires Atlassian Document Format (ADF). API v2
+    /// (Jira Data Center / Server) accepts plain strings.
+    fn make_body(&self, text: &str) -> serde_json::Value {
+        if self.api_version >= 3 {
+            text_to_adf(text)
+        } else {
+            serde_json::Value::String(text.to_string())
+        }
     }
 
     // ── Projects ──────────────────────────────────────────────────────────────
@@ -549,10 +579,42 @@ mod tests {
 
     #[test]
     fn browse_url_preserves_explicit_http_hosts() {
-        let client = JiraClient::new("http://localhost:8080", "me@example.com", "token").unwrap();
+        let client = JiraClient::new(
+            "http://localhost:8080",
+            "me@example.com",
+            "token",
+            AuthType::Basic,
+            3,
+        )
+        .unwrap();
         assert_eq!(
             client.browse_url("PROJ-1"),
             "http://localhost:8080/browse/PROJ-1"
         );
+    }
+
+    #[test]
+    fn new_with_pat_auth_does_not_require_email() {
+        let client = JiraClient::new(
+            "https://jira.example.com",
+            "",
+            "my-pat-token",
+            AuthType::Pat,
+            3,
+        );
+        assert!(client.is_ok());
+    }
+
+    #[test]
+    fn new_with_api_v2_uses_v2_base_url() {
+        let client = JiraClient::new(
+            "https://jira.example.com",
+            "me@example.com",
+            "token",
+            AuthType::Basic,
+            2,
+        )
+        .unwrap();
+        assert_eq!(client.api_version(), 2);
     }
 }

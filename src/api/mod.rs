@@ -6,6 +6,17 @@ pub use types::*;
 
 use std::fmt;
 
+/// Authentication method used when connecting to Jira.
+///
+/// `Basic` uses HTTP Basic auth with email and API token (Jira Cloud default).
+/// `Pat` uses a Bearer token (Personal Access Token), typically for Jira Data Center / Server.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub enum AuthType {
+    #[default]
+    Basic,
+    Pat,
+}
+
 #[derive(Debug)]
 pub enum ApiError {
     /// Bad credentials or forbidden.

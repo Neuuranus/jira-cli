@@ -1,15 +1,35 @@
 use wiremock::matchers::{header, method, path, path_regex, query_param, query_param_contains};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
-use jira_cli::api::{ApiError, JiraClient};
+use jira_cli::api::{ApiError, AuthType, JiraClient};
 use jira_cli::output::OutputConfig;
 
 // ── Fixtures ──────────────────────────────────────────────────────────────────
 
 fn test_client(server: &MockServer) -> JiraClient {
-    // Strip the scheme so JiraClient re-adds https:// — but wiremock is http,
-    // so we pass the full URI and let JiraClient strip the http:// prefix.
-    JiraClient::new(&server.uri(), "test@example.com", "test-token").unwrap()
+    JiraClient::new(
+        &server.uri(),
+        "test@example.com",
+        "test-token",
+        AuthType::Basic,
+        3,
+    )
+    .unwrap()
+}
+
+fn test_client_pat(server: &MockServer) -> JiraClient {
+    JiraClient::new(&server.uri(), "", "my-pat-token", AuthType::Pat, 3).unwrap()
+}
+
+fn test_client_v2(server: &MockServer) -> JiraClient {
+    JiraClient::new(
+        &server.uri(),
+        "test@example.com",
+        "test-token",
+        AuthType::Basic,
+        2,
+    )
+    .unwrap()
 }
 
 fn json_out() -> OutputConfig {
@@ -981,4 +1001,102 @@ async fn projects_show_returns_project_details() {
     jira_cli::commands::projects::show(&client, &out, "PROJ")
         .await
         .unwrap();
+}
+
+// ── PAT auth ──────────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn pat_auth_sends_bearer_header() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("GET"))
+        .and(path("/rest/api/3/project/search"))
+        .and(header("authorization", "Bearer my-pat-token"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(project_search_response(vec![])))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = test_client_pat(&server);
+    client.list_projects().await.unwrap();
+}
+
+#[tokio::test]
+async fn basic_auth_does_not_send_bearer_header() {
+    let server = MockServer::start().await;
+
+    // Basic auth header must NOT start with "Bearer"
+    Mock::given(method("GET"))
+        .and(path("/rest/api/3/project/search"))
+        .and(header(
+            "authorization",
+            "Basic dGVzdEBleGFtcGxlLmNvbTp0ZXN0LXRva2Vu",
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(project_search_response(vec![])))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = test_client(&server);
+    client.list_projects().await.unwrap();
+}
+
+// ── API v2 ────────────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn api_v2_uses_v2_base_path() {
+    let server = MockServer::start().await;
+
+    // Must hit /rest/api/2/myself, not /rest/api/3/myself
+    Mock::given(method("GET"))
+        .and(path("/rest/api/2/myself"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "name": "testuser",
+            "displayName": "Test User",
+            "key": "testuser",
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = test_client_v2(&server);
+    client.get_myself().await.unwrap();
+}
+
+#[tokio::test]
+async fn api_v2_add_comment_sends_plain_string_body() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("POST"))
+        .and(path("/rest/api/2/issue/PROJ-1/comment"))
+        .respond_with(ResponseTemplate::new(201).set_body_json(serde_json::json!({
+            "id": "10100",
+            "author": { "displayName": "Test", "accountId": "abc" },
+            "body": "Hello world",
+            "created": "2024-01-01T00:00:00.000Z"
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = test_client_v2(&server);
+    let comment = client.add_comment("PROJ-1", "Hello world").await.unwrap();
+    assert_eq!(comment.id, "10100");
+}
+
+#[tokio::test]
+async fn api_v2_plain_string_description_is_extracted_as_text() {
+    use jira_cli::api::extract_adf_text;
+    let plain = serde_json::Value::String("This is a plain description".to_string());
+    assert_eq!(extract_adf_text(&plain), "This is a plain description");
+}
+
+#[tokio::test]
+async fn api_v3_adf_description_still_extracted_correctly() {
+    use jira_cli::api::extract_adf_text;
+    let adf = serde_json::json!({
+        "type": "doc", "version": 1,
+        "content": [{"type": "paragraph", "content": [{"type": "text", "text": "ADF paragraph"}]}]
+    });
+    assert_eq!(extract_adf_text(&adf), "ADF paragraph");
 }

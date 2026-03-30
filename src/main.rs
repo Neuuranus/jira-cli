@@ -274,7 +274,13 @@ async fn run(cli: Cli, out: OutputConfig) -> Result<(), Box<dyn std::error::Erro
     }
 
     let cfg = Config::load(cli.host, cli.email, cli.profile)?;
-    let client = JiraClient::new(&cfg.host, &cfg.email, &cfg.token)?;
+    let client = JiraClient::new(
+        &cfg.host,
+        &cfg.email,
+        &cfg.token,
+        cfg.auth_type,
+        cfg.api_version,
+    )?;
 
     match cli.command {
         Command::Issues(cmd) => match cmd {
@@ -419,18 +425,22 @@ fn schema_json() -> serde_json::Value {
             "resolution_order": {
                 "host": ["--host", "JIRA_HOST", "config profile/default host"],
                 "email": ["--email", "JIRA_EMAIL", "config profile/default email"],
-                "token": ["JIRA_TOKEN", "config profile/default token"]
+                "token": ["JIRA_TOKEN", "config profile/default token"],
+                "auth_type": ["JIRA_AUTH_TYPE", "config profile/default auth_type"],
+                "api_version": ["JIRA_API_VERSION", "config profile/default api_version"]
             },
             "env": [
                 { "name": "JIRA_HOST", "description": "Atlassian domain override", "required": false },
-                { "name": "JIRA_EMAIL", "description": "Account email override", "required": false },
+                { "name": "JIRA_EMAIL", "description": "Account email override (not required when auth_type=pat)", "required": false },
                 { "name": "JIRA_TOKEN", "description": "API token override (env/config only)", "required": false },
-                { "name": "JIRA_PROFILE", "description": "Config profile", "required": false }
+                { "name": "JIRA_PROFILE", "description": "Config profile", "required": false },
+                { "name": "JIRA_AUTH_TYPE", "description": "Authentication type: 'basic' (default, Jira Cloud) or 'pat' (Personal Access Token, Jira Data Center/Server)", "required": false },
+                { "name": "JIRA_API_VERSION", "description": "Jira REST API version: 3 (default, Cloud) or 2 (Data Center/Server)", "required": false }
             ]
         },
         "global_flags": [
             { "name": "--host", "env": "JIRA_HOST", "description": "Atlassian domain", "required": false },
-            { "name": "--email", "env": "JIRA_EMAIL", "description": "Account email", "required": false },
+            { "name": "--email", "env": "JIRA_EMAIL", "description": "Account email (not required when auth_type=pat)", "required": false },
             { "name": "--profile", "env": "JIRA_PROFILE", "description": "Config profile", "required": false },
             { "name": "--json", "description": "Force JSON output (auto when stdout is not a TTY)", "required": false },
             { "name": "--quiet", "description": "Suppress non-data output", "required": false },
