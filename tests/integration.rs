@@ -2922,11 +2922,11 @@ fn sprints_response(sprints: Vec<serde_json::Value>) -> serde_json::Value {
     serde_json::json!({ "values": sprints, "isLast": true, "startAt": 0 })
 }
 
-fn mount_board_and_sprints<'a>(
+async fn mount_board_and_sprints<'a>(
     server: &'a MockServer,
     sprints: Vec<serde_json::Value>,
-) -> impl std::future::Future<Output = ()> + 'a {
-    async move {
+) {
+    {
         Mock::given(method("GET"))
             .and(path("/rest/agile/1.0/board"))
             .respond_with(ResponseTemplate::new(200).set_body_json(boards_response(&[(
