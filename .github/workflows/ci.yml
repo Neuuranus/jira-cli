@@ -11,8 +11,11 @@ env:
 
 jobs:
   ci:
-    name: Check / Test
-    runs-on: ubuntu-latest
+    name: Check / Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
 
     steps:
       - uses: actions/checkout@v4
