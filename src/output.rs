@@ -5,6 +5,18 @@ pub fn use_color() -> bool {
     std::io::stdout().is_terminal()
 }
 
+/// Format a URL as a clickable OSC 8 hyperlink in terminals that support it.
+///
+/// Modern terminals (iTerm2, Ghostty, Warp, VTE-based) render this as a
+/// clickable link. Falls back to the bare URL when not on a color TTY.
+pub fn hyperlink(url: &str) -> String {
+    if use_color() {
+        format!("\x1b]8;;{url}\x1b\\{url}\x1b]8;;\x1b\\")
+    } else {
+        url.to_string()
+    }
+}
+
 /// Output configuration for agent-friendly CLI design.
 ///
 /// Supports TTY detection (auto-JSON when piped), quiet mode,

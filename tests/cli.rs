@@ -75,6 +75,8 @@ fn config_init_auto_json_when_piped() {
     );
     assert!(json["pathResolution"].as_str().is_some());
     assert!(json["recommendedPermissions"].as_str().is_some());
+    // configExists reflects whether the config file was present at the time of the call
+    assert_eq!(json["configExists"], false);
 }
 
 #[test]

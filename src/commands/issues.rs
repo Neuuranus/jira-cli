@@ -1,6 +1,6 @@
 use owo_colors::OwoColorize;
 
-use crate::api::{ApiError, Issue, JiraClient, escape_jql};
+use crate::api::{ApiError, Issue, IssueLink, JiraClient, escape_jql};
 use crate::output::{OutputConfig, use_color};
 
 #[allow(clippy::too_many_arguments)]
@@ -10,12 +10,13 @@ pub async fn list(
     project: Option<&str>,
     status: Option<&str>,
     assignee: Option<&str>,
+    issue_type: Option<&str>,
     sprint: Option<&str>,
     jql_extra: Option<&str>,
     limit: usize,
     offset: usize,
 ) -> Result<(), ApiError> {
-    let jql = build_list_jql(project, status, assignee, sprint, jql_extra);
+    let jql = build_list_jql(project, status, assignee, issue_type, sprint, jql_extra);
     let resp = client.search(&jql, limit, offset).await?;
 
     if out.json {
@@ -78,6 +79,8 @@ pub async fn create(
     priority: Option<&str>,
     labels: Option<&[&str]>,
     assignee: Option<&str>,
+    sprint: Option<&str>,
+    custom_fields: &[(String, serde_json::Value)],
 ) -> Result<(), ApiError> {
     let resp = client
         .create_issue(
@@ -88,13 +91,19 @@ pub async fn create(
             priority,
             labels,
             assignee,
+            custom_fields,
         )
         .await?;
     let url = client.browse_url(&resp.key);
-    out.print_result(
-        &serde_json::json!({ "key": resp.key, "id": resp.id, "url": url }),
-        &resp.key,
-    );
+
+    let mut result = serde_json::json!({ "key": resp.key, "id": resp.id, "url": url });
+    if let Some(s) = sprint {
+        let resolved = client.resolve_sprint(s).await?;
+        client.move_issue_to_sprint(&resp.key, resolved.id).await?;
+        result["sprintId"] = serde_json::json!(resolved.id);
+        result["sprintName"] = serde_json::json!(resolved.name);
+    }
+    out.print_result(&result, &resp.key);
     Ok(())
 }
 
@@ -105,13 +114,34 @@ pub async fn update(
     summary: Option<&str>,
     description: Option<&str>,
     priority: Option<&str>,
+    custom_fields: &[(String, serde_json::Value)],
 ) -> Result<(), ApiError> {
     client
-        .update_issue(key, summary, description, priority)
+        .update_issue(key, summary, description, priority, custom_fields)
         .await?;
     out.print_result(
         &serde_json::json!({ "key": key, "updated": true }),
         &format!("Updated {key}"),
+    );
+    Ok(())
+}
+
+/// Move an issue to a sprint.
+pub async fn move_to_sprint(
+    client: &JiraClient,
+    out: &OutputConfig,
+    key: &str,
+    sprint: &str,
+) -> Result<(), ApiError> {
+    let resolved = client.resolve_sprint(sprint).await?;
+    client.move_issue_to_sprint(key, resolved.id).await?;
+    out.print_result(
+        &serde_json::json!({
+            "issue": key,
+            "sprintId": resolved.id,
+            "sprintName": resolved.name,
+        }),
+        &format!("Moved {key} to {} ({})", resolved.name, resolved.id),
     );
     Ok(())
 }
@@ -153,10 +183,14 @@ pub async fn transition(
         Some(t) => {
             let name = t.name.clone();
             let id = t.id.clone();
+            let status =
+                t.to.as_ref()
+                    .map(|tt| tt.name.clone())
+                    .unwrap_or_else(|| name.clone());
             client.do_transition(key, &id).await?;
             out.print_result(
-                &serde_json::json!({ "issue": key, "transition": name, "id": id }),
-                &format!("Transitioned {key} → {name}"),
+                &serde_json::json!({ "issue": key, "transition": name, "status": status, "id": id }),
+                &format!("Transitioned {key} → {status}"),
             );
         }
         None => {
@@ -227,6 +261,71 @@ pub async fn assign(
     out.print_result(
         &serde_json::json!({ "issue": key, "accountId": account_id }),
         &format!("Assigned {key} to {assignee}"),
+    );
+    Ok(())
+}
+
+/// List available issue link types.
+pub async fn link_types(client: &JiraClient, out: &OutputConfig) -> Result<(), ApiError> {
+    let types = client.get_link_types().await?;
+
+    if out.json {
+        out.print_data(
+            &serde_json::to_string_pretty(&serde_json::json!(
+                types
+                    .iter()
+                    .map(|t| serde_json::json!({
+                        "id": t.id,
+                        "name": t.name,
+                        "inward": t.inward,
+                        "outward": t.outward,
+                    }))
+                    .collect::<Vec<_>>()
+            ))
+            .expect("failed to serialize JSON"),
+        );
+        return Ok(());
+    }
+
+    for t in &types {
+        println!(
+            "{:<20}  outward: {}  /  inward: {}",
+            t.name, t.outward, t.inward
+        );
+    }
+    Ok(())
+}
+
+/// Link two issues.
+pub async fn link(
+    client: &JiraClient,
+    out: &OutputConfig,
+    from_key: &str,
+    to_key: &str,
+    link_type: &str,
+) -> Result<(), ApiError> {
+    client.link_issues(from_key, to_key, link_type).await?;
+    out.print_result(
+        &serde_json::json!({
+            "from": from_key,
+            "to": to_key,
+            "type": link_type,
+        }),
+        &format!("Linked {from_key} → {to_key} ({link_type})"),
+    );
+    Ok(())
+}
+
+/// Remove an issue link by link ID.
+pub async fn unlink(
+    client: &JiraClient,
+    out: &OutputConfig,
+    link_id: &str,
+) -> Result<(), ApiError> {
+    client.unlink_issues(link_id).await?;
+    out.print_result(
+        &serde_json::json!({ "linkId": link_id }),
+        &format!("Removed link {link_id}"),
     );
     Ok(())
 }
@@ -342,6 +441,16 @@ fn render_issue_detail(issue: &Issue) {
         }
     }
 
+    if let Some(ref links) = issue.fields.issue_links
+        && !links.is_empty()
+    {
+        println!();
+        println!("Links:");
+        for link in links {
+            render_issue_link(link);
+        }
+    }
+
     if let Some(ref comment_list) = issue.fields.comment
         && !comment_list.comments.is_empty()
     {
@@ -360,6 +469,21 @@ fn render_issue_detail(issue: &Issue) {
                 println!("    {line}");
             }
         }
+    }
+}
+
+fn render_issue_link(link: &IssueLink) {
+    if let Some(ref out_issue) = link.outward_issue {
+        println!(
+            "  [{}] {} {} — {}",
+            link.id, link.link_type.outward, out_issue.key, out_issue.fields.summary
+        );
+    }
+    if let Some(ref in_issue) = link.inward_issue {
+        println!(
+            "  [{}] {} {} — {}",
+            link.id, link.link_type.inward, in_issue.key, in_issue.fields.summary
+        );
     }
 }
 
@@ -407,6 +531,43 @@ fn issue_detail_to_json(issue: &Issue, client: &JiraClient) -> serde_json::Value
         })
         .unwrap_or_default();
 
+    let issue_links: Vec<serde_json::Value> = issue
+        .fields
+        .issue_links
+        .as_deref()
+        .unwrap_or_default()
+        .iter()
+        .map(|link| {
+            let sentence = if let Some(ref out_issue) = link.outward_issue {
+                format!("{} {} {}", issue.key, link.link_type.outward, out_issue.key)
+            } else if let Some(ref in_issue) = link.inward_issue {
+                format!("{} {} {}", issue.key, link.link_type.inward, in_issue.key)
+            } else {
+                String::new()
+            };
+            serde_json::json!({
+                "id": link.id,
+                "sentence": sentence,
+                "type": {
+                    "id": link.link_type.id,
+                    "name": link.link_type.name,
+                    "inward": link.link_type.inward,
+                    "outward": link.link_type.outward,
+                },
+                "outwardIssue": link.outward_issue.as_ref().map(|i| serde_json::json!({
+                    "key": i.key,
+                    "summary": i.fields.summary,
+                    "status": i.fields.status.name,
+                })),
+                "inwardIssue": link.inward_issue.as_ref().map(|i| serde_json::json!({
+                    "key": i.key,
+                    "summary": i.fields.summary,
+                    "status": i.fields.status.name,
+                })),
+            })
+        })
+        .collect();
+
     serde_json::json!({
         "key": issue.key,
         "id": issue.id,
@@ -428,6 +589,7 @@ fn issue_detail_to_json(issue: &Issue, client: &JiraClient) -> serde_json::Value
         "created": issue.fields.created,
         "updated": issue.fields.updated,
         "comments": comments,
+        "issueLinks": issue_links,
     })
 }
 
@@ -437,6 +599,7 @@ fn build_list_jql(
     project: Option<&str>,
     status: Option<&str>,
     assignee: Option<&str>,
+    issue_type: Option<&str>,
     sprint: Option<&str>,
     extra: Option<&str>,
 ) -> String {
@@ -454,6 +617,9 @@ fn build_list_jql(
         } else {
             parts.push(format!(r#"assignee = "{}""#, escape_jql(a)));
         }
+    }
+    if let Some(t) = issue_type {
+        parts.push(format!(r#"issuetype = "{}""#, escape_jql(t)));
     }
     if let Some(s) = sprint {
         if s == "active" || s == "open" {
@@ -555,14 +721,14 @@ mod tests {
     #[test]
     fn build_list_jql_empty() {
         assert_eq!(
-            build_list_jql(None, None, None, None, None),
+            build_list_jql(None, None, None, None, None, None),
             "ORDER BY updated DESC"
         );
     }
 
     #[test]
     fn build_list_jql_escapes_quotes() {
-        let jql = build_list_jql(None, Some(r#"Done" OR 1=1"#), None, None, None);
+        let jql = build_list_jql(None, Some(r#"Done" OR 1=1"#), None, None, None, None);
         // The double quote must be backslash-escaped so it cannot break out of the JQL string.
         // The resulting clause should be:  status = "Done\" OR 1=1"
         assert!(jql.contains(r#"\""#), "double quote must be escaped");
@@ -574,26 +740,32 @@ mod tests {
 
     #[test]
     fn build_list_jql_project_and_status() {
-        let jql = build_list_jql(Some("PROJ"), Some("In Progress"), None, None, None);
+        let jql = build_list_jql(Some("PROJ"), Some("In Progress"), None, None, None, None);
         assert!(jql.contains(r#"project = "PROJ""#));
         assert!(jql.contains(r#"status = "In Progress""#));
     }
 
     #[test]
     fn build_list_jql_assignee_me() {
-        let jql = build_list_jql(None, None, Some("me"), None, None);
+        let jql = build_list_jql(None, None, Some("me"), None, None, None);
         assert!(jql.contains("currentUser()"));
     }
 
     #[test]
+    fn build_list_jql_issue_type() {
+        let jql = build_list_jql(None, None, None, Some("Bug"), None, None);
+        assert!(jql.contains(r#"issuetype = "Bug""#));
+    }
+
+    #[test]
     fn build_list_jql_sprint_active() {
-        let jql = build_list_jql(None, None, None, Some("active"), None);
+        let jql = build_list_jql(None, None, None, None, Some("active"), None);
         assert!(jql.contains("sprint in openSprints()"));
     }
 
     #[test]
     fn build_list_jql_sprint_named() {
-        let jql = build_list_jql(None, None, None, Some("Sprint 42"), None);
+        let jql = build_list_jql(None, None, None, None, Some("Sprint 42"), None);
         assert!(jql.contains(r#"sprint = "Sprint 42""#));
     }
 

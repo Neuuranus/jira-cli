@@ -11,6 +11,7 @@ use super::types::*;
 pub struct JiraClient {
     http: reqwest::Client,
     base_url: String,
+    agile_base_url: String,
     site_url: String,
     host: String,
     api_version: u8,
@@ -75,10 +76,12 @@ impl JiraClient {
 
         let site_url = format!("{scheme}://{domain}");
         let base_url = format!("{site_url}/rest/api/{api_version}");
+        let agile_base_url = format!("{site_url}/rest/agile/1.0");
 
         Ok(Self {
             http,
             base_url,
+            agile_base_url,
             site_url,
             host: domain.to_string(),
             api_version,
@@ -113,6 +116,17 @@ impl JiraClient {
 
     async fn get<T: DeserializeOwned>(&self, path: &str) -> Result<T, ApiError> {
         let url = format!("{}/{path}", self.base_url);
+        let resp = self.http.get(&url).send().await?;
+        let status = resp.status();
+        if !status.is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            return Err(Self::map_status(status.as_u16(), body));
+        }
+        resp.json::<T>().await.map_err(ApiError::Http)
+    }
+
+    async fn agile_get<T: DeserializeOwned>(&self, path: &str) -> Result<T, ApiError> {
+        let url = format!("{}/{path}", self.agile_base_url);
         let resp = self.http.get(&url).send().await?;
         let status = resp.status();
         if !status.is_success() {
@@ -204,7 +218,7 @@ impl JiraClient {
     /// the remaining comments.
     pub async fn get_issue(&self, key: &str) -> Result<Issue, ApiError> {
         validate_issue_key(key)?;
-        let fields = "summary,status,assignee,reporter,priority,issuetype,description,labels,created,updated,comment";
+        let fields = "summary,status,assignee,reporter,priority,issuetype,description,labels,created,updated,comment,issuelinks";
         let path = format!("issue/{key}?fields={fields}");
         let mut issue: Issue = self.get(&path).await?;
 
@@ -241,6 +255,7 @@ impl JiraClient {
         priority: Option<&str>,
         labels: Option<&[&str]>,
         assignee: Option<&str>,
+        custom_fields: &[(String, serde_json::Value)],
     ) -> Result<CreateIssueResponse, ApiError> {
         let mut fields = serde_json::json!({
             "project": { "key": project_key },
@@ -259,8 +274,11 @@ impl JiraClient {
         {
             fields["labels"] = serde_json::json!(lbls);
         }
-        if let Some(account_id) = assignee {
-            fields["assignee"] = serde_json::json!({ "accountId": account_id });
+        if let Some(id) = assignee {
+            fields["assignee"] = self.assignee_payload(id);
+        }
+        for (key, value) in custom_fields {
+            fields[key] = value.clone();
         }
 
         self.post("issue", &serde_json::json!({ "fields": fields }))
@@ -289,14 +307,35 @@ impl JiraClient {
             .await
     }
 
-    /// Assign an issue to a user by account ID, or unassign with `None`.
+    /// Assign an issue to a user, or unassign with `None`.
+    ///
+    /// API v3 (Jira Cloud) identifies users by `accountId`.
+    /// API v2 (Jira Data Center / Server) identifies users by `name` (username).
     pub async fn assign_issue(&self, key: &str, account_id: Option<&str>) -> Result<(), ApiError> {
         validate_issue_key(key)?;
-        let payload = serde_json::json!({
-            "accountId": account_id
-        });
+        let payload = match account_id {
+            Some(id) => self.assignee_payload(id),
+            None => {
+                if self.api_version >= 3 {
+                    serde_json::json!({ "accountId": null })
+                } else {
+                    serde_json::json!({ "name": null })
+                }
+            }
+        };
         self.put_empty_response(&format!("issue/{key}/assignee"), &payload)
             .await
+    }
+
+    /// Build the assignee payload for the current API version.
+    ///
+    /// API v3 uses `accountId`; API v2 uses `name` (username).
+    fn assignee_payload(&self, id: &str) -> serde_json::Value {
+        if self.api_version >= 3 {
+            serde_json::json!({ "accountId": id })
+        } else {
+            serde_json::json!({ "name": id })
+        }
     }
 
     /// Get the currently authenticated user.
@@ -304,13 +343,14 @@ impl JiraClient {
         self.get("myself").await
     }
 
-    /// Update issue fields (summary, description, priority).
+    /// Update issue fields (summary, description, priority, or any custom field).
     pub async fn update_issue(
         &self,
         key: &str,
         summary: Option<&str>,
         description: Option<&str>,
         priority: Option<&str>,
+        custom_fields: &[(String, serde_json::Value)],
     ) -> Result<(), ApiError> {
         validate_issue_key(key)?;
         let mut fields = serde_json::Map::new();
@@ -323,9 +363,13 @@ impl JiraClient {
         if let Some(p) = priority {
             fields.insert("priority".into(), serde_json::json!({ "name": p }));
         }
+        for (k, value) in custom_fields {
+            fields.insert(k.clone(), value.clone());
+        }
         if fields.is_empty() {
             return Err(ApiError::InvalidInput(
-                "At least one field (--summary, --description, --priority) is required".into(),
+                "At least one field (--summary, --description, --priority, or --field) is required"
+                    .into(),
             ));
         }
         self.put_empty_response(
@@ -347,10 +391,134 @@ impl JiraClient {
         }
     }
 
+    // ── Users ─────────────────────────────────────────────────────────────────
+
+    /// Search for users matching a query string.
+    ///
+    /// API v2: uses `username` parameter. API v3: uses `query` parameter.
+    pub async fn search_users(&self, query: &str) -> Result<Vec<User>, ApiError> {
+        let encoded = percent_encode(query);
+        let param = if self.api_version >= 3 {
+            "query"
+        } else {
+            "username"
+        };
+        let path = format!("user/search?{param}={encoded}&maxResults=50");
+        self.get::<Vec<User>>(&path).await
+    }
+
+    // ── Issue links ───────────────────────────────────────────────────────────
+
+    /// List available issue link types.
+    pub async fn get_link_types(&self) -> Result<Vec<IssueLinkType>, ApiError> {
+        #[derive(serde::Deserialize)]
+        struct Wrapper {
+            #[serde(rename = "issueLinkTypes")]
+            types: Vec<IssueLinkType>,
+        }
+        let w: Wrapper = self.get("issueLinkType").await?;
+        Ok(w.types)
+    }
+
+    /// Link two issues.
+    ///
+    /// `link_type` is the name of the link type (e.g. "Blocks", "Duplicate").
+    /// The direction follows the link type's `outward` description:
+    /// `from_key` outward-links to `to_key`.
+    pub async fn link_issues(
+        &self,
+        from_key: &str,
+        to_key: &str,
+        link_type: &str,
+    ) -> Result<(), ApiError> {
+        validate_issue_key(from_key)?;
+        validate_issue_key(to_key)?;
+        let payload = serde_json::json!({
+            "type": { "name": link_type },
+            "inwardIssue": { "key": from_key },
+            "outwardIssue": { "key": to_key },
+        });
+        let url = format!("{}/issueLink", self.base_url);
+        let resp = self.http.post(&url).json(&payload).send().await?;
+        let status = resp.status();
+        if !status.is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            return Err(Self::map_status(status.as_u16(), body));
+        }
+        Ok(())
+    }
+
+    /// Remove an issue link by its ID.
+    pub async fn unlink_issues(&self, link_id: &str) -> Result<(), ApiError> {
+        let url = format!("{}/issueLink/{link_id}", self.base_url);
+        let resp = self.http.delete(&url).send().await?;
+        let status = resp.status();
+        if !status.is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            return Err(Self::map_status(status.as_u16(), body));
+        }
+        Ok(())
+    }
+
+    // ── Boards & Sprints ──────────────────────────────────────────────────────
+
+    /// List all boards, fetching all pages.
+    pub async fn list_boards(&self) -> Result<Vec<Board>, ApiError> {
+        let mut all = Vec::new();
+        let mut start_at = 0usize;
+        const PAGE: usize = 50;
+        loop {
+            let path = format!("board?startAt={start_at}&maxResults={PAGE}");
+            let page: BoardSearchResponse = self.agile_get(&path).await?;
+            let received = page.values.len();
+            all.extend(page.values);
+            if page.is_last || received == 0 {
+                break;
+            }
+            start_at += received;
+        }
+        Ok(all)
+    }
+
+    /// List sprints for a board, optionally filtered by state.
+    ///
+    /// `state` can be "active", "closed", "future", or `None` for all.
+    pub async fn list_sprints(
+        &self,
+        board_id: u64,
+        state: Option<&str>,
+    ) -> Result<Vec<Sprint>, ApiError> {
+        let mut all = Vec::new();
+        let mut start_at = 0usize;
+        const PAGE: usize = 50;
+        loop {
+            let state_param = state.map(|s| format!("&state={s}")).unwrap_or_default();
+            let path = format!(
+                "board/{board_id}/sprint?startAt={start_at}&maxResults={PAGE}{state_param}"
+            );
+            let page: SprintSearchResponse = self.agile_get(&path).await?;
+            let received = page.values.len();
+            all.extend(page.values);
+            if page.is_last || received == 0 {
+                break;
+            }
+            start_at += received;
+        }
+        Ok(all)
+    }
+
     // ── Projects ──────────────────────────────────────────────────────────────
 
-    /// List all accessible projects, fetching all pages from the paginated endpoint.
+    /// List all accessible projects.
+    ///
+    /// API v3 (Jira Cloud) uses the paginated `project/search` endpoint.
+    /// API v2 (Jira Data Center / Server) uses the simpler `project` endpoint
+    /// that returns all results in a single flat array.
     pub async fn list_projects(&self) -> Result<Vec<Project>, ApiError> {
+        if self.api_version < 3 {
+            return self.get::<Vec<Project>>("project").await;
+        }
+
         let mut all: Vec<Project> = Vec::new();
         let mut start_at: usize = 0;
         const PAGE: usize = 50;
@@ -382,6 +550,93 @@ impl JiraClient {
     /// Fetch a single project by key.
     pub async fn get_project(&self, key: &str) -> Result<Project, ApiError> {
         self.get(&format!("project/{key}")).await
+    }
+
+    // ── Fields ────────────────────────────────────────────────────────────────
+
+    /// List all available fields (system and custom).
+    pub async fn list_fields(&self) -> Result<Vec<Field>, ApiError> {
+        self.get::<Vec<Field>>("field").await
+    }
+
+    /// Move an issue to a sprint.
+    ///
+    /// Uses the Agile REST API which is version-independent.
+    pub async fn move_issue_to_sprint(
+        &self,
+        issue_key: &str,
+        sprint_id: u64,
+    ) -> Result<(), ApiError> {
+        validate_issue_key(issue_key)?;
+        let url = format!("{}/sprint/{sprint_id}/issue", self.agile_base_url);
+        let payload = serde_json::json!({ "issues": [issue_key] });
+        let resp = self.http.post(&url).json(&payload).send().await?;
+        let status = resp.status();
+        if !status.is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            return Err(Self::map_status(status.as_u16(), body));
+        }
+        Ok(())
+    }
+
+    /// Fetch a single sprint by numeric ID.
+    pub async fn get_sprint(&self, sprint_id: u64) -> Result<Sprint, ApiError> {
+        self.agile_get::<Sprint>(&format!("sprint/{sprint_id}"))
+            .await
+    }
+
+    /// Resolve a sprint specifier to a `Sprint`.
+    ///
+    /// Accepts:
+    /// - A numeric string: fetches the sprint by ID to confirm it exists and get the name
+    /// - `"active"`: returns the first active sprint found across all boards
+    /// - Any other string: matched case-insensitively as a substring of sprint names
+    pub async fn resolve_sprint(&self, specifier: &str) -> Result<Sprint, ApiError> {
+        if let Ok(id) = specifier.parse::<u64>() {
+            return self.get_sprint(id).await;
+        }
+
+        let boards = self.list_boards().await?;
+        if boards.is_empty() {
+            return Err(ApiError::NotFound("No boards found".into()));
+        }
+
+        let target_state = if specifier.eq_ignore_ascii_case("active") {
+            Some("active")
+        } else {
+            None
+        };
+
+        for board in &boards {
+            let sprints = self.list_sprints(board.id, target_state).await?;
+            for sprint in sprints {
+                if specifier.eq_ignore_ascii_case("active") {
+                    if sprint.state == "active" {
+                        return Ok(sprint);
+                    }
+                } else if sprint
+                    .name
+                    .to_lowercase()
+                    .contains(&specifier.to_lowercase())
+                {
+                    return Ok(sprint);
+                }
+            }
+        }
+
+        Err(ApiError::NotFound(format!(
+            "No sprint found matching '{specifier}'"
+        )))
+    }
+
+    /// Resolve a sprint specifier to its numeric ID.
+    ///
+    /// See [`resolve_sprint`] for accepted specifier formats.
+    pub async fn resolve_sprint_id(&self, specifier: &str) -> Result<u64, ApiError> {
+        if let Ok(id) = specifier.parse::<u64>() {
+            return Ok(id);
+        }
+        self.resolve_sprint(specifier).await.map(|s| s.id)
     }
 }
 

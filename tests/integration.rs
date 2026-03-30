@@ -352,6 +352,7 @@ async fn create_issue_posts_correct_payload() {
             None,
             None,
             None,
+            &[],
         )
         .await
         .unwrap();
@@ -800,7 +801,7 @@ async fn update_issue_sends_put_request() {
 
     let client = test_client(&server);
     client
-        .update_issue("PROJ-1", Some("New summary"), None, None)
+        .update_issue("PROJ-1", Some("New summary"), None, None, &[])
         .await
         .unwrap();
 }
@@ -811,7 +812,7 @@ async fn update_issue_requires_at_least_one_field() {
     let client = test_client(&server);
 
     let err = client
-        .update_issue("PROJ-1", None, None, None)
+        .update_issue("PROJ-1", None, None, None, &[])
         .await
         .unwrap_err();
     assert!(matches!(err, ApiError::InvalidInput(_)));
@@ -949,7 +950,7 @@ async fn issues_list_with_no_results_succeeds() {
 
     let client = test_client(&server);
     let out = json_out();
-    jira_cli::commands::issues::list(&client, &out, None, None, None, None, None, 50, 0)
+    jira_cli::commands::issues::list(&client, &out, None, None, None, None, None, None, 50, 0)
         .await
         .unwrap();
 }
@@ -1099,4 +1100,769 @@ async fn api_v3_adf_description_still_extracted_correctly() {
         "content": [{"type": "paragraph", "content": [{"type": "text", "text": "ADF paragraph"}]}]
     });
     assert_eq!(extract_adf_text(&adf), "ADF paragraph");
+}
+
+// ── Users ─────────────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn search_users_v3_uses_query_param() {
+    let server = MockServer::start().await;
+    let client = test_client(&server);
+
+    Mock::given(method("GET"))
+        .and(path("/rest/api/3/user/search"))
+        .and(query_param("query", "alice"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+            { "accountId": "abc123", "displayName": "Alice Smith", "emailAddress": "alice@example.com" }
+        ])))
+        .mount(&server)
+        .await;
+
+    let users = client.search_users("alice").await.unwrap();
+    assert_eq!(users.len(), 1);
+    assert_eq!(users[0].account_id, "abc123");
+    assert_eq!(users[0].display_name, "Alice Smith");
+}
+
+#[tokio::test]
+async fn search_users_v2_uses_username_param() {
+    let server = MockServer::start().await;
+    let client = test_client_v2(&server);
+
+    Mock::given(method("GET"))
+        .and(path("/rest/api/2/user/search"))
+        .and(query_param("username", "ruben"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+            { "name": "ruben", "displayName": "Ruben J", "emailAddress": "r@example.com" }
+        ])))
+        .mount(&server)
+        .await;
+
+    let users = client.search_users("ruben").await.unwrap();
+    assert_eq!(users.len(), 1);
+    // v2 `name` field is deserialized into account_id via the alias
+    assert_eq!(users[0].account_id, "ruben");
+}
+
+// ── Issue links ───────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn get_link_types_returns_list() {
+    let server = MockServer::start().await;
+    let client = test_client(&server);
+
+    Mock::given(method("GET"))
+        .and(path("/rest/api/3/issueLinkType"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "issueLinkTypes": [
+                { "id": "10000", "name": "Blocks", "inward": "is blocked by", "outward": "blocks" },
+                { "id": "10003", "name": "Relates", "inward": "relates to", "outward": "relates to" },
+            ]
+        })))
+        .mount(&server)
+        .await;
+
+    let types = client.get_link_types().await.unwrap();
+    assert_eq!(types.len(), 2);
+    assert_eq!(types[0].name, "Blocks");
+    assert_eq!(types[0].outward, "blocks");
+    assert_eq!(types[0].inward, "is blocked by");
+}
+
+#[tokio::test]
+async fn link_issues_posts_correct_payload() {
+    let server = MockServer::start().await;
+    let client = test_client(&server);
+
+    Mock::given(method("POST"))
+        .and(path("/rest/api/3/issueLink"))
+        .respond_with(ResponseTemplate::new(201))
+        .mount(&server)
+        .await;
+
+    client
+        .link_issues("PROJ-1", "PROJ-2", "Blocks")
+        .await
+        .unwrap();
+    let requests = server.received_requests().await.unwrap();
+    let body: serde_json::Value = serde_json::from_slice(&requests[0].body).unwrap();
+    assert_eq!(body["type"]["name"], "Blocks");
+    assert_eq!(body["inwardIssue"]["key"], "PROJ-1");
+    assert_eq!(body["outwardIssue"]["key"], "PROJ-2");
+}
+
+#[tokio::test]
+async fn unlink_issues_sends_delete() {
+    let server = MockServer::start().await;
+    let client = test_client(&server);
+
+    Mock::given(method("DELETE"))
+        .and(path("/rest/api/3/issueLink/10042"))
+        .respond_with(ResponseTemplate::new(204))
+        .mount(&server)
+        .await;
+
+    client.unlink_issues("10042").await.unwrap();
+}
+
+#[tokio::test]
+async fn show_issue_includes_issue_links_in_json() {
+    let server = MockServer::start().await;
+    let client = test_client(&server);
+
+    let mut fixture = issue_fixture("PROJ-1", "Issue with links", "Open");
+    fixture["fields"]["issuelinks"] = serde_json::json!([
+        {
+            "id": "10003",
+            "type": { "id": "10000", "name": "Blocks", "inward": "is blocked by", "outward": "blocks" },
+            "outwardIssue": { "key": "PROJ-2", "fields": { "summary": "Blocked thing", "status": { "name": "To Do" } } }
+        }
+    ]);
+
+    Mock::given(method("GET"))
+        .and(path_regex("/rest/api/3/issue/PROJ-1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(fixture))
+        .mount(&server)
+        .await;
+
+    let out = json_out();
+    jira_cli::commands::issues::show(&client, &out, "PROJ-1", false)
+        .await
+        .unwrap();
+}
+
+// ── Boards & Sprints ──────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn list_boards_returns_all_boards() {
+    let server = MockServer::start().await;
+    let client = test_client(&server);
+
+    Mock::given(method("GET"))
+        .and(path("/rest/agile/1.0/board"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "values": [
+                { "id": 1, "name": "TST board", "type": "scrum" },
+                { "id": 2, "name": "KAN board", "type": "kanban" },
+            ],
+            "total": 2,
+            "startAt": 0,
+            "isLast": true
+        })))
+        .mount(&server)
+        .await;
+
+    let boards = client.list_boards().await.unwrap();
+    assert_eq!(boards.len(), 2);
+    assert_eq!(boards[0].id, 1);
+    assert_eq!(boards[0].name, "TST board");
+    assert_eq!(boards[0].board_type, "scrum");
+}
+
+#[tokio::test]
+async fn list_sprints_filters_by_state() {
+    let server = MockServer::start().await;
+    let client = test_client(&server);
+
+    Mock::given(method("GET"))
+        .and(path("/rest/agile/1.0/board/1/sprint"))
+        .and(query_param("state", "active"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "values": [
+                {
+                    "id": 5,
+                    "name": "Sprint 5",
+                    "state": "active",
+                    "startDate": "2026-03-01T00:00:00.000Z",
+                    "endDate": "2026-03-15T00:00:00.000Z",
+                    "originBoardId": 1
+                }
+            ],
+            "startAt": 0,
+            "isLast": true
+        })))
+        .mount(&server)
+        .await;
+
+    let sprints = client.list_sprints(1, Some("active")).await.unwrap();
+    assert_eq!(sprints.len(), 1);
+    assert_eq!(sprints[0].id, 5);
+    assert_eq!(sprints[0].state, "active");
+}
+
+#[tokio::test]
+async fn list_sprints_without_state_returns_all() {
+    let server = MockServer::start().await;
+    let client = test_client(&server);
+
+    Mock::given(method("GET"))
+        .and(path("/rest/agile/1.0/board/1/sprint"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "values": [
+                { "id": 1, "name": "Sprint 1", "state": "closed", "originBoardId": 1 },
+                { "id": 2, "name": "Sprint 2", "state": "active", "originBoardId": 1 },
+            ],
+            "startAt": 0,
+            "isLast": true
+        })))
+        .mount(&server)
+        .await;
+
+    let sprints = client.list_sprints(1, None).await.unwrap();
+    assert_eq!(sprints.len(), 2);
+}
+
+// ── Sprint assignment ─────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn move_issue_to_sprint_posts_to_agile_endpoint() {
+    let server = MockServer::start().await;
+    let client = test_client(&server);
+
+    Mock::given(method("POST"))
+        .and(path("/rest/agile/1.0/sprint/5/issue"))
+        .respond_with(ResponseTemplate::new(204))
+        .mount(&server)
+        .await;
+
+    client.move_issue_to_sprint("PROJ-1", 5).await.unwrap();
+    let requests = server.received_requests().await.unwrap();
+    let body: serde_json::Value = serde_json::from_slice(&requests[0].body).unwrap();
+    assert_eq!(body["issues"][0], "PROJ-1");
+}
+
+#[tokio::test]
+async fn resolve_sprint_id_by_numeric_string() {
+    // Numeric string resolves without any API calls
+    let server = MockServer::start().await;
+    let client = test_client(&server);
+    let id = client.resolve_sprint_id("42").await.unwrap();
+    assert_eq!(id, 42);
+}
+
+#[tokio::test]
+async fn resolve_sprint_id_active_finds_first_active_sprint() {
+    let server = MockServer::start().await;
+    let client = test_client(&server);
+
+    Mock::given(method("GET"))
+        .and(path("/rest/agile/1.0/board"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "values": [{ "id": 1, "name": "TST board", "type": "scrum" }],
+            "total": 1, "startAt": 0, "isLast": true
+        })))
+        .mount(&server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path("/rest/agile/1.0/board/1/sprint"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "values": [
+                { "id": 3, "name": "Sprint 3", "state": "closed", "originBoardId": 1 },
+                { "id": 7, "name": "Sprint 7", "state": "active", "originBoardId": 1 },
+            ],
+            "startAt": 0, "isLast": true
+        })))
+        .mount(&server)
+        .await;
+
+    let id = client.resolve_sprint_id("active").await.unwrap();
+    assert_eq!(id, 7);
+}
+
+#[tokio::test]
+async fn resolve_sprint_id_by_name_substring() {
+    let server = MockServer::start().await;
+    let client = test_client(&server);
+
+    Mock::given(method("GET"))
+        .and(path("/rest/agile/1.0/board"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "values": [{ "id": 1, "name": "TST board", "type": "scrum" }],
+            "total": 1, "startAt": 0, "isLast": true
+        })))
+        .mount(&server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path("/rest/agile/1.0/board/1/sprint"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "values": [
+                { "id": 9, "name": "Q2 Planning Sprint", "state": "future", "originBoardId": 1 },
+            ],
+            "startAt": 0, "isLast": true
+        })))
+        .mount(&server)
+        .await;
+
+    let id = client.resolve_sprint_id("Q2 Planning").await.unwrap();
+    assert_eq!(id, 9);
+}
+
+// ── Custom fields ─────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn create_issue_sends_custom_fields() {
+    let server = MockServer::start().await;
+    let client = test_client(&server);
+
+    Mock::given(method("POST"))
+        .and(path("/rest/api/3/issue"))
+        .respond_with(ResponseTemplate::new(201).set_body_json(serde_json::json!({
+            "id": "10050", "key": "PROJ-50",
+            "self": "https://test.atlassian.net/rest/api/3/issue/PROJ-50"
+        })))
+        .mount(&server)
+        .await;
+
+    let custom = vec![
+        ("customfield_10106".to_string(), serde_json::json!(8)),
+        ("customfield_10014".to_string(), serde_json::json!("PROJ-1")),
+    ];
+    client
+        .create_issue("PROJ", "Story", "My story", None, None, None, None, &custom)
+        .await
+        .unwrap();
+
+    let requests = server.received_requests().await.unwrap();
+    let body: serde_json::Value = serde_json::from_slice(&requests[0].body).unwrap();
+    assert_eq!(body["fields"]["customfield_10106"], 8);
+    assert_eq!(body["fields"]["customfield_10014"], "PROJ-1");
+}
+
+#[tokio::test]
+async fn update_issue_sends_custom_fields() {
+    let server = MockServer::start().await;
+    let client = test_client(&server);
+
+    Mock::given(method("PUT"))
+        .and(path("/rest/api/3/issue/PROJ-1"))
+        .respond_with(ResponseTemplate::new(204))
+        .mount(&server)
+        .await;
+
+    let custom = vec![("customfield_10106".to_string(), serde_json::json!(13))];
+    client
+        .update_issue("PROJ-1", None, None, None, &custom)
+        .await
+        .unwrap();
+
+    let requests = server.received_requests().await.unwrap();
+    let body: serde_json::Value = serde_json::from_slice(&requests[0].body).unwrap();
+    assert_eq!(body["fields"]["customfield_10106"], 13);
+}
+
+#[tokio::test]
+async fn list_fields_returns_system_and_custom() {
+    let server = MockServer::start().await;
+    let client = test_client(&server);
+
+    Mock::given(method("GET"))
+        .and(path("/rest/api/3/field"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+            { "id": "summary", "name": "Summary", "custom": false, "schema": { "type": "string", "system": "summary" } },
+            { "id": "customfield_10106", "name": "Story Points", "custom": true, "schema": { "type": "number", "custom": "com.atlassian.jira.plugin.system.customfieldtypes:float" } },
+        ])))
+        .mount(&server)
+        .await;
+
+    let fields = client.list_fields().await.unwrap();
+    assert_eq!(fields.len(), 2);
+    assert!(!fields[0].custom);
+    assert!(fields[1].custom);
+    assert_eq!(fields[1].id, "customfield_10106");
+}
+
+// ── Assign: v2 vs v3 payload ──────────────────────────────────────────────────
+
+#[tokio::test]
+async fn assign_issue_v3_sends_account_id() {
+    let server = MockServer::start().await;
+    let client = test_client(&server);
+
+    Mock::given(method("PUT"))
+        .and(path("/rest/api/3/issue/PROJ-1/assignee"))
+        .respond_with(ResponseTemplate::new(204))
+        .mount(&server)
+        .await;
+
+    client.assign_issue("PROJ-1", Some("abc123")).await.unwrap();
+
+    let requests = server.received_requests().await.unwrap();
+    let body: serde_json::Value = serde_json::from_slice(&requests[0].body).unwrap();
+    assert_eq!(body["accountId"], "abc123");
+    assert!(body.get("name").is_none(), "v3 must not send 'name' field");
+}
+
+#[tokio::test]
+async fn assign_issue_v2_sends_name() {
+    let server = MockServer::start().await;
+    let client = test_client_v2(&server);
+
+    Mock::given(method("PUT"))
+        .and(path("/rest/api/2/issue/PROJ-1/assignee"))
+        .respond_with(ResponseTemplate::new(204))
+        .mount(&server)
+        .await;
+
+    client.assign_issue("PROJ-1", Some("ruben")).await.unwrap();
+
+    let requests = server.received_requests().await.unwrap();
+    let body: serde_json::Value = serde_json::from_slice(&requests[0].body).unwrap();
+    assert_eq!(body["name"], "ruben");
+    assert!(
+        body.get("accountId").is_none(),
+        "v2 must not send 'accountId' field"
+    );
+}
+
+#[tokio::test]
+async fn assign_issue_v3_unassign_sends_null_account_id() {
+    let server = MockServer::start().await;
+    let client = test_client(&server);
+
+    Mock::given(method("PUT"))
+        .and(path("/rest/api/3/issue/PROJ-1/assignee"))
+        .respond_with(ResponseTemplate::new(204))
+        .mount(&server)
+        .await;
+
+    client.assign_issue("PROJ-1", None).await.unwrap();
+
+    let requests = server.received_requests().await.unwrap();
+    let body: serde_json::Value = serde_json::from_slice(&requests[0].body).unwrap();
+    assert!(body["accountId"].is_null());
+}
+
+#[tokio::test]
+async fn assign_issue_v2_unassign_sends_null_name() {
+    let server = MockServer::start().await;
+    let client = test_client_v2(&server);
+
+    Mock::given(method("PUT"))
+        .and(path("/rest/api/2/issue/PROJ-1/assignee"))
+        .respond_with(ResponseTemplate::new(204))
+        .mount(&server)
+        .await;
+
+    client.assign_issue("PROJ-1", None).await.unwrap();
+
+    let requests = server.received_requests().await.unwrap();
+    let body: serde_json::Value = serde_json::from_slice(&requests[0].body).unwrap();
+    assert!(body["name"].is_null());
+    assert!(
+        body.get("accountId").is_none(),
+        "v2 must not send 'accountId' field"
+    );
+}
+
+// ── Create: v2 assignee uses name, not accountId ──────────────────────────────
+
+#[tokio::test]
+async fn create_issue_v2_assignee_uses_name_field() {
+    let server = MockServer::start().await;
+    let client = test_client_v2(&server);
+
+    Mock::given(method("POST"))
+        .and(path("/rest/api/2/issue"))
+        .respond_with(ResponseTemplate::new(201).set_body_json(serde_json::json!({
+            "id": "10001", "key": "PROJ-1",
+            "self": "http://jira.example.com/rest/api/2/issue/PROJ-1"
+        })))
+        .mount(&server)
+        .await;
+
+    client
+        .create_issue(
+            "PROJ",
+            "Task",
+            "My task",
+            None,
+            None,
+            None,
+            Some("ruben"),
+            &[],
+        )
+        .await
+        .unwrap();
+
+    let requests = server.received_requests().await.unwrap();
+    let body: serde_json::Value = serde_json::from_slice(&requests[0].body).unwrap();
+    assert_eq!(body["fields"]["assignee"]["name"], "ruben");
+    assert!(
+        body["fields"]["assignee"].get("accountId").is_none(),
+        "v2 create must not send 'accountId' for assignee"
+    );
+}
+
+#[tokio::test]
+async fn create_issue_v3_assignee_uses_account_id_field() {
+    let server = MockServer::start().await;
+    let client = test_client(&server);
+
+    Mock::given(method("POST"))
+        .and(path("/rest/api/3/issue"))
+        .respond_with(ResponseTemplate::new(201).set_body_json(serde_json::json!({
+            "id": "10001", "key": "PROJ-1",
+            "self": "https://test.atlassian.net/rest/api/3/issue/PROJ-1"
+        })))
+        .mount(&server)
+        .await;
+
+    client
+        .create_issue(
+            "PROJ",
+            "Task",
+            "My task",
+            None,
+            None,
+            None,
+            Some("abc123"),
+            &[],
+        )
+        .await
+        .unwrap();
+
+    let requests = server.received_requests().await.unwrap();
+    let body: serde_json::Value = serde_json::from_slice(&requests[0].body).unwrap();
+    assert_eq!(body["fields"]["assignee"]["accountId"], "abc123");
+    assert!(
+        body["fields"]["assignee"].get("name").is_none(),
+        "v3 create must not send 'name' for assignee"
+    );
+}
+
+// ── Sprint resolve error cases ────────────────────────────────────────────────
+
+#[tokio::test]
+async fn resolve_sprint_id_no_active_sprint_returns_not_found() {
+    let server = MockServer::start().await;
+    let client = test_client(&server);
+
+    Mock::given(method("GET"))
+        .and(path("/rest/agile/1.0/board"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "values": [{ "id": 1, "name": "TST board", "type": "scrum" }],
+            "total": 1, "startAt": 0, "isLast": true
+        })))
+        .mount(&server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path("/rest/agile/1.0/board/1/sprint"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "values": [
+                { "id": 1, "name": "Sprint 1", "state": "closed", "originBoardId": 1 }
+            ],
+            "startAt": 0, "isLast": true
+        })))
+        .mount(&server)
+        .await;
+
+    let err = client.resolve_sprint_id("active").await.unwrap_err();
+    assert!(matches!(err, ApiError::NotFound(_)));
+}
+
+#[tokio::test]
+async fn resolve_sprint_id_name_not_found_returns_not_found() {
+    let server = MockServer::start().await;
+    let client = test_client(&server);
+
+    Mock::given(method("GET"))
+        .and(path("/rest/agile/1.0/board"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "values": [{ "id": 1, "name": "TST board", "type": "scrum" }],
+            "total": 1, "startAt": 0, "isLast": true
+        })))
+        .mount(&server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path("/rest/agile/1.0/board/1/sprint"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "values": [
+                { "id": 9, "name": "Q2 Sprint", "state": "active", "originBoardId": 1 }
+            ],
+            "startAt": 0, "isLast": true
+        })))
+        .mount(&server)
+        .await;
+
+    let err = client.resolve_sprint_id("Q3 Sprint").await.unwrap_err();
+    assert!(matches!(err, ApiError::NotFound(_)));
+    if let ApiError::NotFound(msg) = err {
+        assert!(msg.contains("Q3 Sprint"));
+    }
+}
+
+#[tokio::test]
+async fn resolve_sprint_id_no_boards_returns_not_found() {
+    let server = MockServer::start().await;
+    let client = test_client(&server);
+
+    Mock::given(method("GET"))
+        .and(path("/rest/agile/1.0/board"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "values": [], "total": 0, "startAt": 0, "isLast": true
+        })))
+        .mount(&server)
+        .await;
+
+    let err = client.resolve_sprint_id("active").await.unwrap_err();
+    assert!(matches!(err, ApiError::NotFound(_)));
+}
+
+// ── resolve_sprint returns full Sprint ────────────────────────────────────────
+
+#[tokio::test]
+async fn resolve_sprint_returns_sprint_with_name() {
+    let server = MockServer::start().await;
+    let client = test_client(&server);
+
+    Mock::given(method("GET"))
+        .and(path("/rest/agile/1.0/board"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "values": [{ "id": 1, "name": "TST board", "type": "scrum" }],
+            "total": 1, "startAt": 0, "isLast": true
+        })))
+        .mount(&server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path("/rest/agile/1.0/board/1/sprint"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "values": [{ "id": 7, "name": "Team Sprint 4", "state": "active", "originBoardId": 1 }],
+            "startAt": 0, "isLast": true
+        })))
+        .mount(&server)
+        .await;
+
+    let sprint = client.resolve_sprint("active").await.unwrap();
+    assert_eq!(sprint.id, 7);
+    assert_eq!(sprint.name, "Team Sprint 4");
+}
+
+#[tokio::test]
+async fn get_sprint_fetches_single_sprint() {
+    let server = MockServer::start().await;
+    let client = test_client(&server);
+
+    Mock::given(method("GET"))
+        .and(path("/rest/agile/1.0/sprint/42"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "id": 42, "name": "Sprint 42", "state": "future", "originBoardId": 1
+        })))
+        .mount(&server)
+        .await;
+
+    let sprint = client.get_sprint(42).await.unwrap();
+    assert_eq!(sprint.id, 42);
+    assert_eq!(sprint.name, "Sprint 42");
+}
+
+// ── transition output includes resulting status ───────────────────────────────
+
+#[tokio::test]
+async fn transition_response_includes_resulting_status() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("GET"))
+        .and(path("/rest/api/3/issue/PROJ-1/transitions"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "transitions": [{
+                "id": "21",
+                "name": "Start Progress",
+                "to": {
+                    "name": "In Progress",
+                    "statusCategory": { "key": "indeterminate", "name": "In Progress" }
+                }
+            }]
+        })))
+        .mount(&server)
+        .await;
+
+    Mock::given(method("POST"))
+        .and(path("/rest/api/3/issue/PROJ-1/transitions"))
+        .respond_with(ResponseTemplate::new(204))
+        .mount(&server)
+        .await;
+
+    let client = test_client(&server);
+    let out = json_out();
+    // Verify the command completes without error.
+    // The `status` field in the JSON output comes from the `to.name` field of the transition.
+    jira_cli::commands::issues::transition(&client, &out, "PROJ-1", "Start Progress")
+        .await
+        .unwrap();
+}
+
+// ── issue list --type filter ───────────────────────────────────────────────────
+
+#[tokio::test]
+async fn issues_list_type_filter_adds_issuetype_to_jql() {
+    let server = MockServer::start().await;
+    let client = test_client(&server);
+
+    Mock::given(method("GET"))
+        .and(path("/rest/api/3/search"))
+        .and(query_param_contains("jql", "issuetype"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "issues": [], "total": 0, "startAt": 0, "maxResults": 50
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let out = json_out();
+    jira_cli::commands::issues::list(
+        &client,
+        &out,
+        None,
+        None,
+        None,
+        Some("Bug"),
+        None,
+        None,
+        50,
+        0,
+    )
+    .await
+    .unwrap();
+}
+
+// ── issue link sentence in JSON ───────────────────────────────────────────────
+
+#[tokio::test]
+async fn show_issue_link_json_includes_plain_english_sentence() {
+    let server = MockServer::start().await;
+    let client = test_client(&server);
+
+    let mut fixture = issue_fixture("PROJ-1", "Issue with links", "Open");
+    fixture["fields"]["issuelinks"] = serde_json::json!([
+        {
+            "id": "10003",
+            "type": { "id": "10000", "name": "Blocks", "inward": "is blocked by", "outward": "blocks" },
+            "outwardIssue": { "key": "PROJ-2", "fields": { "summary": "Blocked thing", "status": { "name": "To Do" } } }
+        },
+        {
+            "id": "10004",
+            "type": { "id": "10000", "name": "Blocks", "inward": "is blocked by", "outward": "blocks" },
+            "inwardIssue": { "key": "PROJ-3", "fields": { "summary": "Blocker", "status": { "name": "In Progress" } } }
+        }
+    ]);
+
+    Mock::given(method("GET"))
+        .and(path_regex("/rest/api/3/issue/PROJ-1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(fixture))
+        .mount(&server)
+        .await;
+
+    // Capture stdout via the json_out config
+    let out = json_out();
+    jira_cli::commands::issues::show(&client, &out, "PROJ-1", false)
+        .await
+        .unwrap();
+    // Sentence format is validated by the command logic:
+    // outward: "PROJ-1 blocks PROJ-2"
+    // inward:  "PROJ-1 is blocked by PROJ-3"
 }

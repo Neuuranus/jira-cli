@@ -66,6 +66,8 @@ pub struct IssueFields {
     pub created: Option<String>,
     pub updated: Option<String>,
     pub comment: Option<CommentList>,
+    #[serde(rename = "issuelinks")]
+    pub issue_links: Option<Vec<IssueLink>>,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -78,6 +80,8 @@ pub struct StatusField {
 pub struct UserField {
     pub display_name: String,
     pub email_address: Option<String>,
+    /// Cloud: `accountId`. DC/Server: `name` (username).
+    #[serde(alias = "name")]
     pub account_id: Option<String>,
 }
 
@@ -119,6 +123,114 @@ impl Comment {
             None => String::new(),
         }
     }
+}
+
+/// A Jira user returned from the user search endpoint.
+#[derive(Debug, Deserialize, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct User {
+    /// Cloud: `accountId`. DC/Server: `name` (username).
+    #[serde(alias = "name")]
+    pub account_id: String,
+    pub display_name: String,
+    pub email_address: Option<String>,
+}
+
+/// An issue link (relationship between two issues).
+#[derive(Debug, Deserialize, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct IssueLink {
+    pub id: String,
+    #[serde(rename = "type")]
+    pub link_type: IssueLinkType,
+    pub outward_issue: Option<LinkedIssue>,
+    pub inward_issue: Option<LinkedIssue>,
+}
+
+/// The type of an issue link (e.g. "Blocks", "Duplicate").
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct IssueLinkType {
+    pub id: String,
+    pub name: String,
+    pub inward: String,
+    pub outward: String,
+}
+
+/// A summary view of an issue referenced in a link.
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct LinkedIssue {
+    pub key: String,
+    pub fields: LinkedIssueFields,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct LinkedIssueFields {
+    pub summary: String,
+    pub status: StatusField,
+}
+
+/// A Jira Agile board.
+#[derive(Debug, Deserialize, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct Board {
+    pub id: u64,
+    pub name: String,
+    #[serde(rename = "type")]
+    pub board_type: String,
+}
+
+/// Paginated board response from the Agile API.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BoardSearchResponse {
+    pub values: Vec<Board>,
+    pub is_last: bool,
+    #[serde(default)]
+    pub start_at: usize,
+    pub total: usize,
+}
+
+/// A Jira sprint.
+#[derive(Debug, Deserialize, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct Sprint {
+    pub id: u64,
+    pub name: String,
+    pub state: String,
+    pub start_date: Option<String>,
+    pub end_date: Option<String>,
+    pub complete_date: Option<String>,
+    pub origin_board_id: Option<u64>,
+}
+
+/// Paginated sprint response from the Agile API.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SprintSearchResponse {
+    pub values: Vec<Sprint>,
+    pub is_last: bool,
+    #[serde(default)]
+    pub start_at: usize,
+}
+
+/// A Jira field (system or custom).
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct Field {
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub custom: bool,
+    pub schema: Option<FieldSchema>,
+}
+
+/// The schema of a field, describing its type.
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct FieldSchema {
+    #[serde(rename = "type")]
+    pub field_type: String,
+    pub items: Option<String>,
+    pub system: Option<String>,
+    pub custom: Option<String>,
 }
 
 /// Jira project.
@@ -195,9 +307,15 @@ pub struct CreateIssueResponse {
 }
 
 /// Current authenticated user.
+///
+/// Jira Cloud (API v3) identifies users by `accountId`.
+/// Jira Data Center / Server (API v2) identifies users by `name` (username).
+/// Both forms deserialize into `account_id` so callers can use it uniformly.
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Myself {
+    /// Cloud: `accountId`. DC/Server: `name` (username).
+    #[serde(alias = "name")]
     pub account_id: String,
     pub display_name: String,
 }

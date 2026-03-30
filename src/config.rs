@@ -261,7 +261,11 @@ pub fn show(
 }
 
 /// Print example config file and instructions for obtaining an API token.
-pub fn init(out: &OutputConfig) {
+///
+/// Pass `host` (e.g. `"jira.mycompany.com"`) to include a one-click URL to the
+/// Personal Access Token creation page on a Jira DC/Server instance. When omitted
+/// the URL is shown as a template placeholder.
+pub fn init(out: &OutputConfig, host: Option<&str>) {
     let path = config_path();
     let path_resolution = schema_config_path_description();
     let permission_advice = recommended_permissions(&path);
@@ -288,13 +292,23 @@ pub fn init(out: &OutputConfig) {
         }
     });
 
+    const CLOUD_TOKEN_URL: &str = "https://id.atlassian.com/manage-profile/security/api-tokens";
+
+    let pat_url = dc_pat_url(host);
+    let config_status = if path.exists() {
+        "exists — run `jira config show` to see current values"
+    } else {
+        "not found — create it"
+    };
+
     if out.json {
         out.print_data(
             &serde_json::to_string_pretty(&serde_json::json!({
                 "configPath": path,
                 "pathResolution": path_resolution,
-                "cloudTokenInstructions": "https://id.atlassian.com/manage-profile/security/api-tokens",
-                "dcPatInstructions": "Log in to your Jira DC/Server instance → profile → Personal Access Tokens. Set auth_type = \"pat\" and api_version = 2 in your config.",
+                "configExists": path.exists(),
+                "tokenInstructions": CLOUD_TOKEN_URL,
+                "dcPatInstructions": pat_url,
                 "recommendedPermissions": permission_advice,
                 "example": example,
             }))
@@ -303,20 +317,21 @@ pub fn init(out: &OutputConfig) {
         return;
     }
 
+    let cloud_link = crate::output::hyperlink(CLOUD_TOKEN_URL);
+    let pat_link = crate::output::hyperlink(&pat_url);
+
     out.print_data(&format!(
         "\
-Create or edit: {}
-Path resolution: {}
+Config file: {path_display} ({config_status})
 
 ── Jira Cloud ────────────────────────────────────────────────────────────────
 
 [default]
-host      = \"mycompany.atlassian.net\"
-email     = \"me@example.com\"
-token     = \"your-api-token\"
+host  = \"mycompany.atlassian.net\"
+email = \"me@example.com\"
+token = \"your-api-token\"
 
-Get your API token at:
-  https://id.atlassian.com/manage-profile/security/api-tokens
+  {cloud_link}
 
 ── Jira Data Center / Server ─────────────────────────────────────────────────
 
@@ -326,36 +341,36 @@ token       = \"your-personal-access-token\"
 auth_type   = \"pat\"
 api_version = 2
 
-Create a Personal Access Token in Jira DC/Server:
-  1. Log in to your Jira instance
-  2. Go to your profile → Personal Access Tokens
-     (or navigate to: http://<your-host>/secure/ViewProfile.jspa)
-  3. Click \"Create token\", give it a name and expiry
-  4. Copy the token value — it is only shown once
+  {pat_link}
 
-Use with: jira --profile dc <command>
-      or: JIRA_PROFILE=dc jira <command>
+Use --profile dc to switch:  jira --profile dc <command>
+                         or: JIRA_PROFILE=dc jira <command>
 
-── Multiple profiles ─────────────────────────────────────────────────────────
+── Security ──────────────────────────────────────────────────────────────────
 
-[default]
-host  = \"mycompany.atlassian.net\"
-email = \"me@example.com\"
-token = \"cloud-api-token\"
-
-[profiles.dc]
-host        = \"jira.mycompany.com\"
-token       = \"dc-personal-access-token\"
-auth_type   = \"pat\"
-api_version = 2
-
-── Permissions ───────────────────────────────────────────────────────────────
-
-{}",
-        path.display(),
-        path_resolution,
-        permission_advice,
+{permission_advice}",
+        path_display = path.display(),
     ));
+}
+
+const PAT_PATH: &str = "/secure/ViewProfile.jspa?selectedTab=com.atlassian.pats.pats-plugin:jira-user-personal-access-tokens";
+
+/// Build the Personal Access Token creation URL for a Jira DC/Server instance.
+///
+/// When `host` is known the full URL is returned so the user can click it directly.
+/// When unknown a placeholder template is returned.
+fn dc_pat_url(host: Option<&str>) -> String {
+    match host {
+        Some(h) => {
+            let base = if h.starts_with("http://") || h.starts_with("https://") {
+                h.trim_end_matches('/').to_string()
+            } else {
+                format!("https://{}", h.trim_end_matches('/'))
+            };
+            format!("{base}{PAT_PATH}")
+        }
+        None => format!("http://<your-host>{PAT_PATH}"),
+    }
 }
 
 /// Mask a token for display, showing only the last 4 characters.
