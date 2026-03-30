@@ -27,6 +27,22 @@ install: release
 publish:
 	cargo publish
 
+# ── Local Jira (Data Center) for integration testing ──────────────────────────
+jira-start:
+	docker compose -f docker/docker-compose.yml up -d
+
+jira-stop:
+	docker compose -f docker/docker-compose.yml down
+
+jira-wait:
+	docker/wait-for-jira.sh
+
+jira-logs:
+	docker compose -f docker/docker-compose.yml logs -f jira
+
+jira-reset:
+	docker compose -f docker/docker-compose.yml down -v
+
 release-patch:
 	vership bump patch
 
