@@ -24,6 +24,9 @@ clean:
 install: release
 	cp target/release/jira ~/.local/bin/jira
 
+publish:
+	cargo publish
+
 release-patch:
 	vership bump patch
 
