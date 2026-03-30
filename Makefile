@@ -1,4 +1,4 @@
-.PHONY: build release test test-e2e lint fmt check clean install release-patch release-minor release-major
+.PHONY: build release test test-e2e lint fmt check clean install release-patch release-minor release-major jira-start jira-stop jira-wait jira-logs jira-reset jira-backup jira-restore
 
 build:
 	cargo build
@@ -49,6 +49,23 @@ jira-logs:
 
 jira-reset:
 	docker compose -f docker/docker-compose.yml down -v
+
+jira-backup:
+	docker compose -f docker/docker-compose.yml stop
+	mkdir -p docker/backup
+	docker run --rm -v docker_jira-data:/data -v $(CURDIR)/docker/backup:/backup busybox tar czf /backup/jira-data.tar.gz -C /data .
+	docker run --rm -v docker_postgres-data:/data -v $(CURDIR)/docker/backup:/backup busybox tar czf /backup/postgres-data.tar.gz -C /data .
+	docker compose -f docker/docker-compose.yml start
+	@echo "Backup written to docker/backup/"
+
+jira-restore:
+	docker compose -f docker/docker-compose.yml down -v
+	docker volume create docker_jira-data
+	docker volume create docker_postgres-data
+	docker run --rm -v docker_jira-data:/data -v $(CURDIR)/docker/backup:/backup busybox tar xzf /backup/jira-data.tar.gz -C /data
+	docker run --rm -v docker_postgres-data:/data -v $(CURDIR)/docker/backup:/backup busybox tar xzf /backup/postgres-data.tar.gz -C /data
+	docker compose -f docker/docker-compose.yml up -d
+	@echo "Restore complete — run 'make jira-wait' to confirm readiness"
 
 release-patch:
 	vership bump patch
