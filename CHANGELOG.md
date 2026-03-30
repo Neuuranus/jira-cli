@@ -7,6 +7,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 
 
+
+## [0.3.1](https://github.com/rvben/jira-cli/compare/v0.3.0...v0.3.1) - 2026-03-30
+
+### Fixed
+
+- simplify mount_board_and_sprints to async fn per clippy lint ([37e094b](https://github.com/rvben/jira-cli/commit/37e094b6fe2c1c6f8602c3faccaea1d8adcfbb73))
+
 ## [0.3.0](https://github.com/rvben/jira-cli/compare/v0.2.0...v0.3.0) - 2026-03-30
 
 ### Added
