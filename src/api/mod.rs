@@ -66,3 +66,85 @@ impl From<reqwest::Error> for ApiError {
         ApiError::Http(e)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::error::Error;
+
+    #[test]
+    fn auth_error_display_includes_check_guidance() {
+        let err = ApiError::Auth("invalid credentials".into());
+        let msg = err.to_string();
+        assert!(msg.contains("Authentication failed"));
+        assert!(msg.contains("invalid credentials"));
+        assert!(msg.contains("JIRA_TOKEN"), "should hint at how to fix auth");
+    }
+
+    #[test]
+    fn not_found_error_display_includes_message() {
+        let err = ApiError::NotFound("PROJ-999 not found".into());
+        let msg = err.to_string();
+        assert!(msg.contains("Not found"));
+        assert!(msg.contains("PROJ-999"));
+    }
+
+    #[test]
+    fn invalid_input_error_display_includes_message() {
+        let err = ApiError::InvalidInput("host is required".into());
+        let msg = err.to_string();
+        assert!(msg.contains("Invalid input"));
+        assert!(msg.contains("host is required"));
+    }
+
+    #[test]
+    fn rate_limit_error_display_is_actionable() {
+        let err = ApiError::RateLimit;
+        let msg = err.to_string();
+        assert!(msg.to_lowercase().contains("rate limit") || msg.contains("Rate limit"));
+        assert!(msg.contains("wait"), "should tell user to wait");
+    }
+
+    #[test]
+    fn api_error_display_includes_status_and_message() {
+        let err = ApiError::Api {
+            status: 422,
+            message: "Field 'foo' is required".into(),
+        };
+        let msg = err.to_string();
+        assert!(msg.contains("422"));
+        assert!(msg.contains("Field 'foo' is required"));
+    }
+
+    #[test]
+    fn other_error_display_is_message_verbatim() {
+        let err = ApiError::Other("something unexpected".into());
+        assert_eq!(err.to_string(), "something unexpected");
+    }
+
+    #[test]
+    fn http_error_source_is_the_underlying_reqwest_error() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let reqwest_err = rt.block_on(async {
+            reqwest::Client::new()
+                .get("http://127.0.0.1:1")
+                .send()
+                .await
+                .unwrap_err()
+        });
+        let api_err = ApiError::Http(reqwest_err);
+        assert!(
+            api_err.source().is_some(),
+            "Http variant must expose its source"
+        );
+    }
+
+    #[test]
+    fn non_http_variants_have_no_error_source() {
+        assert!(ApiError::Auth("x".into()).source().is_none());
+        assert!(ApiError::NotFound("x".into()).source().is_none());
+        assert!(ApiError::InvalidInput("x".into()).source().is_none());
+        assert!(ApiError::RateLimit.source().is_none());
+        assert!(ApiError::Other("x".into()).source().is_none());
+    }
+}

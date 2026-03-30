@@ -530,4 +530,375 @@ token = "secret-token"
         #[cfg(not(target_os = "windows"))]
         assert!(guidance.starts_with("chmod 600 "));
     }
+
+    // ── Priority: CLI > env > file ─────────────────────────────────────────────
+
+    #[test]
+    fn load_env_host_overrides_file() {
+        let _env = ProcessEnvLock::acquire().unwrap();
+        let dir = TempDir::new().unwrap();
+        write_config(
+            dir.path(),
+            r#"
+[default]
+host = "file.atlassian.net"
+email = "me@example.com"
+token = "tok"
+"#,
+        )
+        .unwrap();
+
+        let _config_dir = set_config_dir_env(dir.path());
+        let _host = EnvVarGuard::set("JIRA_HOST", "env.atlassian.net");
+        let _email = EnvVarGuard::unset("JIRA_EMAIL");
+        let _token = EnvVarGuard::unset("JIRA_TOKEN");
+        let _profile = EnvVarGuard::unset("JIRA_PROFILE");
+
+        let cfg = Config::load(None, None, None).unwrap();
+        assert_eq!(cfg.host, "env.atlassian.net");
+    }
+
+    #[test]
+    fn load_cli_host_arg_overrides_env_and_file() {
+        let _env = ProcessEnvLock::acquire().unwrap();
+        let dir = TempDir::new().unwrap();
+        write_config(
+            dir.path(),
+            r#"
+[default]
+host = "file.atlassian.net"
+email = "me@example.com"
+token = "tok"
+"#,
+        )
+        .unwrap();
+
+        let _config_dir = set_config_dir_env(dir.path());
+        let _host = EnvVarGuard::set("JIRA_HOST", "env.atlassian.net");
+        let _email = EnvVarGuard::unset("JIRA_EMAIL");
+        let _token = EnvVarGuard::unset("JIRA_TOKEN");
+        let _profile = EnvVarGuard::unset("JIRA_PROFILE");
+
+        let cfg = Config::load(Some("cli.atlassian.net".into()), None, None).unwrap();
+        assert_eq!(cfg.host, "cli.atlassian.net");
+    }
+
+    // ── Error cases ────────────────────────────────────────────────────────────
+
+    #[test]
+    fn load_missing_token_returns_error() {
+        let _env = ProcessEnvLock::acquire().unwrap();
+        let dir = TempDir::new().unwrap();
+        let _config_dir = set_config_dir_env(dir.path());
+        let _host = EnvVarGuard::set("JIRA_HOST", "myhost.atlassian.net");
+        let _email = EnvVarGuard::set("JIRA_EMAIL", "me@example.com");
+        let _token = EnvVarGuard::unset("JIRA_TOKEN");
+        let _profile = EnvVarGuard::unset("JIRA_PROFILE");
+
+        let err = Config::load(None, None, None).unwrap_err();
+        assert!(matches!(err, ApiError::InvalidInput(_)));
+        assert!(err.to_string().contains("No API token"));
+    }
+
+    #[test]
+    fn load_missing_email_for_basic_auth_returns_error() {
+        let _env = ProcessEnvLock::acquire().unwrap();
+        let dir = TempDir::new().unwrap();
+        let _config_dir = set_config_dir_env(dir.path());
+        let _host = EnvVarGuard::set("JIRA_HOST", "myhost.atlassian.net");
+        let _email = EnvVarGuard::unset("JIRA_EMAIL");
+        let _token = EnvVarGuard::set("JIRA_TOKEN", "secret");
+        let _auth = EnvVarGuard::unset("JIRA_AUTH_TYPE");
+        let _profile = EnvVarGuard::unset("JIRA_PROFILE");
+
+        let err = Config::load(None, None, None).unwrap_err();
+        assert!(matches!(err, ApiError::InvalidInput(_)));
+        assert!(err.to_string().contains("No email configured"));
+    }
+
+    #[test]
+    fn load_invalid_toml_returns_error() {
+        let _env = ProcessEnvLock::acquire().unwrap();
+        let dir = TempDir::new().unwrap();
+        write_config(dir.path(), "host = [invalid toml").unwrap();
+
+        let _config_dir = set_config_dir_env(dir.path());
+        let _host = EnvVarGuard::unset("JIRA_HOST");
+        let _token = EnvVarGuard::unset("JIRA_TOKEN");
+        let _profile = EnvVarGuard::unset("JIRA_PROFILE");
+
+        let err = Config::load(None, None, None).unwrap_err();
+        assert!(matches!(err, ApiError::Other(_)));
+        assert!(err.to_string().contains("parse"));
+    }
+
+    // ── Auth type ──────────────────────────────────────────────────────────────
+
+    #[test]
+    fn load_pat_auth_does_not_require_email() {
+        let _env = ProcessEnvLock::acquire().unwrap();
+        let dir = TempDir::new().unwrap();
+        write_config(
+            dir.path(),
+            r#"
+[default]
+host = "jira.corp.com"
+token = "my-pat-token"
+auth_type = "pat"
+api_version = 2
+"#,
+        )
+        .unwrap();
+
+        let _config_dir = set_config_dir_env(dir.path());
+        let _host = EnvVarGuard::unset("JIRA_HOST");
+        let _email = EnvVarGuard::unset("JIRA_EMAIL");
+        let _token = EnvVarGuard::unset("JIRA_TOKEN");
+        let _auth = EnvVarGuard::unset("JIRA_AUTH_TYPE");
+        let _profile = EnvVarGuard::unset("JIRA_PROFILE");
+
+        let cfg = Config::load(None, None, None).unwrap();
+        assert_eq!(cfg.auth_type, AuthType::Pat);
+        assert_eq!(cfg.api_version, 2);
+        assert!(cfg.email.is_empty(), "PAT auth sets email to empty string");
+    }
+
+    #[test]
+    fn load_jira_auth_type_env_pat_overrides_basic() {
+        let _env = ProcessEnvLock::acquire().unwrap();
+        let dir = TempDir::new().unwrap();
+        write_config(
+            dir.path(),
+            r#"
+[default]
+host = "jira.corp.com"
+email = "me@example.com"
+token = "tok"
+auth_type = "basic"
+"#,
+        )
+        .unwrap();
+
+        let _config_dir = set_config_dir_env(dir.path());
+        let _host = EnvVarGuard::unset("JIRA_HOST");
+        let _email = EnvVarGuard::unset("JIRA_EMAIL");
+        let _token = EnvVarGuard::unset("JIRA_TOKEN");
+        let _auth = EnvVarGuard::set("JIRA_AUTH_TYPE", "pat");
+        let _profile = EnvVarGuard::unset("JIRA_PROFILE");
+
+        let cfg = Config::load(None, None, None).unwrap();
+        assert_eq!(cfg.auth_type, AuthType::Pat);
+    }
+
+    #[test]
+    fn load_jira_api_version_env_overrides_default() {
+        let _env = ProcessEnvLock::acquire().unwrap();
+        let dir = TempDir::new().unwrap();
+        let _config_dir = set_config_dir_env(dir.path());
+        let _host = EnvVarGuard::set("JIRA_HOST", "myhost.atlassian.net");
+        let _email = EnvVarGuard::set("JIRA_EMAIL", "me@example.com");
+        let _token = EnvVarGuard::set("JIRA_TOKEN", "tok");
+        let _api_version = EnvVarGuard::set("JIRA_API_VERSION", "2");
+        let _auth = EnvVarGuard::unset("JIRA_AUTH_TYPE");
+        let _profile = EnvVarGuard::unset("JIRA_PROFILE");
+
+        let cfg = Config::load(None, None, None).unwrap();
+        assert_eq!(cfg.api_version, 2);
+    }
+
+    // ── Profile selection ──────────────────────────────────────────────────────
+
+    #[test]
+    fn load_profile_arg_selects_named_section() {
+        let _env = ProcessEnvLock::acquire().unwrap();
+        let dir = TempDir::new().unwrap();
+        write_config(
+            dir.path(),
+            r#"
+[default]
+host = "default.atlassian.net"
+email = "default@example.com"
+token = "default-tok"
+
+[profiles.work]
+host = "work.atlassian.net"
+email = "me@work.com"
+token = "work-tok"
+"#,
+        )
+        .unwrap();
+
+        let _config_dir = set_config_dir_env(dir.path());
+        let _host = EnvVarGuard::unset("JIRA_HOST");
+        let _email = EnvVarGuard::unset("JIRA_EMAIL");
+        let _token = EnvVarGuard::unset("JIRA_TOKEN");
+        let _profile = EnvVarGuard::unset("JIRA_PROFILE");
+
+        let cfg = Config::load(None, None, Some("work".into())).unwrap();
+        assert_eq!(cfg.host, "work.atlassian.net");
+        assert_eq!(cfg.email, "me@work.com");
+        assert_eq!(cfg.token, "work-tok");
+    }
+
+    #[test]
+    fn load_jira_profile_env_selects_named_section() {
+        let _env = ProcessEnvLock::acquire().unwrap();
+        let dir = TempDir::new().unwrap();
+        write_config(
+            dir.path(),
+            r#"
+[default]
+host = "default.atlassian.net"
+email = "default@example.com"
+token = "default-tok"
+
+[profiles.staging]
+host = "staging.atlassian.net"
+email = "me@staging.com"
+token = "staging-tok"
+"#,
+        )
+        .unwrap();
+
+        let _config_dir = set_config_dir_env(dir.path());
+        let _host = EnvVarGuard::unset("JIRA_HOST");
+        let _email = EnvVarGuard::unset("JIRA_EMAIL");
+        let _token = EnvVarGuard::unset("JIRA_TOKEN");
+        let _profile = EnvVarGuard::set("JIRA_PROFILE", "staging");
+
+        let cfg = Config::load(None, None, None).unwrap();
+        assert_eq!(cfg.host, "staging.atlassian.net");
+    }
+
+    #[test]
+    fn load_unknown_profile_returns_descriptive_error() {
+        let _env = ProcessEnvLock::acquire().unwrap();
+        let dir = TempDir::new().unwrap();
+        write_config(
+            dir.path(),
+            r#"
+[profiles.alpha]
+host = "alpha.atlassian.net"
+email = "me@alpha.com"
+token = "alpha-tok"
+"#,
+        )
+        .unwrap();
+
+        let _config_dir = set_config_dir_env(dir.path());
+        let _host = EnvVarGuard::unset("JIRA_HOST");
+        let _token = EnvVarGuard::unset("JIRA_TOKEN");
+        let _profile = EnvVarGuard::unset("JIRA_PROFILE");
+
+        let err = Config::load(None, None, Some("nonexistent".into())).unwrap_err();
+        assert!(matches!(err, ApiError::Other(_)));
+        let msg = err.to_string();
+        assert!(
+            msg.contains("nonexistent"),
+            "error should name the bad profile"
+        );
+        assert!(
+            msg.contains("alpha"),
+            "error should list available profiles"
+        );
+    }
+
+    // ── config::show ───────────────────────────────────────────────────────────
+
+    #[test]
+    fn show_json_output_includes_host_and_masked_token() {
+        let _env = ProcessEnvLock::acquire().unwrap();
+        let dir = TempDir::new().unwrap();
+        write_config(
+            dir.path(),
+            r#"
+[default]
+host = "show-test.atlassian.net"
+email = "me@example.com"
+token = "supersecrettoken"
+"#,
+        )
+        .unwrap();
+
+        let _config_dir = set_config_dir_env(dir.path());
+        let _host = EnvVarGuard::unset("JIRA_HOST");
+        let _email = EnvVarGuard::unset("JIRA_EMAIL");
+        let _token = EnvVarGuard::unset("JIRA_TOKEN");
+        let _profile = EnvVarGuard::unset("JIRA_PROFILE");
+
+        let out = crate::output::OutputConfig::new(true, true);
+        // Must not error and must produce no error output
+        show(&out, None, None, None).unwrap();
+    }
+
+    #[test]
+    fn show_text_output_renders_without_error() {
+        let _env = ProcessEnvLock::acquire().unwrap();
+        let dir = TempDir::new().unwrap();
+        write_config(
+            dir.path(),
+            r#"
+[default]
+host = "show-test.atlassian.net"
+email = "me@example.com"
+token = "supersecrettoken"
+"#,
+        )
+        .unwrap();
+
+        let _config_dir = set_config_dir_env(dir.path());
+        let _host = EnvVarGuard::unset("JIRA_HOST");
+        let _email = EnvVarGuard::unset("JIRA_EMAIL");
+        let _token = EnvVarGuard::unset("JIRA_TOKEN");
+        let _profile = EnvVarGuard::unset("JIRA_PROFILE");
+
+        let out = crate::output::OutputConfig::new(false, true);
+        show(&out, None, None, None).unwrap();
+    }
+
+    // ── config::init ───────────────────────────────────────────────────────────
+
+    #[test]
+    fn init_json_output_includes_example_and_paths() {
+        let out = crate::output::OutputConfig::new(true, true);
+        // No env or config needed — init() never loads credentials
+        init(&out, Some("jira.corp.com"));
+    }
+
+    #[test]
+    fn init_text_output_renders_without_error() {
+        let out = crate::output::OutputConfig::new(false, true);
+        init(&out, None);
+    }
+
+    // ── dc_pat_url ─────────────────────────────────────────────────────────────
+
+    #[test]
+    fn dc_pat_url_without_host_returns_placeholder() {
+        let url = dc_pat_url(None);
+        assert!(url.starts_with("http://<your-host>"));
+        assert!(url.contains(PAT_PATH));
+    }
+
+    #[test]
+    fn dc_pat_url_bare_host_adds_https_scheme() {
+        let url = dc_pat_url(Some("jira.corp.com"));
+        assert!(url.starts_with("https://jira.corp.com"));
+        assert!(url.contains(PAT_PATH));
+    }
+
+    #[test]
+    fn dc_pat_url_host_with_https_scheme_is_preserved() {
+        let url = dc_pat_url(Some("https://jira.corp.com/"));
+        assert!(url.starts_with("https://jira.corp.com"));
+        assert!(!url.contains("https://https://"));
+        assert!(url.contains(PAT_PATH));
+    }
+
+    #[test]
+    fn dc_pat_url_host_with_http_scheme_is_preserved() {
+        let url = dc_pat_url(Some("http://localhost:8080"));
+        assert!(url.starts_with("http://localhost:8080"));
+        assert!(url.contains(PAT_PATH));
+    }
 }

@@ -3151,3 +3151,118 @@ async fn search_run_shows_pagination_info_when_more_results() {
         .await
         .unwrap();
 }
+
+// ── Auth and rate-limit HTTP error responses ──────────────────────────────────
+
+#[tokio::test]
+async fn get_issue_401_returns_auth_error() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("GET"))
+        .and(path("/rest/api/3/issue/PROJ-1"))
+        .respond_with(ResponseTemplate::new(401).set_body_string(
+            r#"{"errorMessages":["You do not have permission to see this issue."]}"#,
+        ))
+        .mount(&server)
+        .await;
+
+    let client = test_client(&server);
+    let err = client.get_issue("PROJ-1").await.unwrap_err();
+    assert!(
+        matches!(err, ApiError::Auth(_)),
+        "401 must map to ApiError::Auth, got: {err}"
+    );
+    let msg = err.to_string();
+    assert!(msg.contains("Authentication failed"));
+    assert!(
+        msg.contains("JIRA_TOKEN"),
+        "auth error must hint at the token env var"
+    );
+}
+
+#[tokio::test]
+async fn get_issue_403_returns_auth_error() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("GET"))
+        .and(path("/rest/api/3/issue/PROJ-2"))
+        .respond_with(
+            ResponseTemplate::new(403).set_body_string(r#"{"errorMessages":["Forbidden"]}"#),
+        )
+        .mount(&server)
+        .await;
+
+    let client = test_client(&server);
+    let err = client.get_issue("PROJ-2").await.unwrap_err();
+    assert!(
+        matches!(err, ApiError::Auth(_)),
+        "403 must map to ApiError::Auth"
+    );
+}
+
+#[tokio::test]
+async fn search_429_returns_rate_limit_error() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("GET"))
+        .and(path("/rest/api/3/search"))
+        .respond_with(ResponseTemplate::new(429))
+        .mount(&server)
+        .await;
+
+    let client = test_client(&server);
+    let err = client.search("project = PROJ", 10, 0).await.unwrap_err();
+    assert!(
+        matches!(err, ApiError::RateLimit),
+        "429 must map to ApiError::RateLimit, got: {err}"
+    );
+    assert!(
+        err.to_string().contains("wait"),
+        "rate limit message should tell user to wait"
+    );
+}
+
+#[tokio::test]
+async fn create_issue_422_returns_api_error_with_status() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("POST"))
+        .and(path("/rest/api/3/issue"))
+        .respond_with(
+            ResponseTemplate::new(422)
+                .set_body_string(r#"{"errors":{"summary":"Field required"},"errorMessages":[]}"#),
+        )
+        .mount(&server)
+        .await;
+
+    let client = test_client(&server);
+    let err = client
+        .create_issue(
+            "PROJ",
+            "Task",
+            "bad issue",
+            None,
+            None,
+            None,
+            None,
+            None,
+            &[],
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, ApiError::Api { status: 422, .. }),
+        "422 must map to ApiError::Api with status 422, got: {err}"
+    );
+    assert!(err.to_string().contains("422"));
+}
+
+#[tokio::test]
+async fn auth_error_message_includes_actionable_guidance() {
+    // Verify the complete auth error message format without a real HTTP call
+    let err = ApiError::Auth("401 Unauthorized".into());
+    let msg = err.to_string();
+    assert!(msg.contains("Authentication failed"));
+    assert!(msg.contains("JIRA_TOKEN"));
+    assert!(msg.contains("config show") || msg.contains("config init"));
+}
