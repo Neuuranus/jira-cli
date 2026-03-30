@@ -15,34 +15,171 @@ pub async fn list(
     jql_extra: Option<&str>,
     limit: usize,
     offset: usize,
+    all: bool,
 ) -> Result<(), ApiError> {
     let jql = build_list_jql(project, status, assignee, issue_type, sprint, jql_extra);
-    let resp = client.search(&jql, limit, offset).await?;
+    if all {
+        let issues = fetch_all_issues(client, &jql).await?;
+        render_results(out, &issues, issues.len(), 0, issues.len(), client, false);
+    } else {
+        let resp = client.search(&jql, limit, offset).await?;
+        let more = resp.total > resp.start_at + resp.issues.len();
+        render_results(
+            out,
+            &resp.issues,
+            resp.total,
+            resp.start_at,
+            resp.max_results,
+            client,
+            more,
+        );
+    }
+    Ok(())
+}
+
+/// List issues assigned to the current user.
+#[allow(clippy::too_many_arguments)]
+pub async fn mine(
+    client: &JiraClient,
+    out: &OutputConfig,
+    project: Option<&str>,
+    status: Option<&str>,
+    issue_type: Option<&str>,
+    sprint: Option<&str>,
+    limit: usize,
+    all: bool,
+) -> Result<(), ApiError> {
+    list(
+        client,
+        out,
+        project,
+        status,
+        Some("me"),
+        issue_type,
+        sprint,
+        None,
+        limit,
+        0,
+        all,
+    )
+    .await
+}
+
+/// List comments on an issue.
+pub async fn comments(client: &JiraClient, out: &OutputConfig, key: &str) -> Result<(), ApiError> {
+    let issue = client.get_issue(key).await?;
+    let comment_list = issue.fields.comment.as_ref();
 
     if out.json {
+        let comments_json: Vec<serde_json::Value> = comment_list
+            .map(|cl| {
+                cl.comments
+                    .iter()
+                    .map(|c| {
+                        serde_json::json!({
+                            "id": c.id,
+                            "author": {
+                                "displayName": c.author.display_name,
+                                "accountId": c.author.account_id,
+                            },
+                            "body": c.body_text(),
+                            "created": c.created,
+                            "updated": c.updated,
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        let total = comment_list.map(|cl| cl.total).unwrap_or(0);
         out.print_data(
             &serde_json::to_string_pretty(&serde_json::json!({
-                "total": resp.total,
-                "startAt": resp.start_at,
-                "maxResults": resp.max_results,
-                "issues": resp.issues.iter().map(|i| issue_to_json(i, client)).collect::<Vec<_>>(),
+                "issue": key,
+                "total": total,
+                "comments": comments_json,
             }))
             .expect("failed to serialize JSON"),
         );
     } else {
-        render_issue_table(&resp.issues, out);
-        if resp.total > resp.start_at + resp.issues.len() {
-            out.print_message(&format!(
-                "Showing {}-{} of {} issues — use --limit or --offset to paginate",
-                resp.start_at + 1,
-                resp.start_at + resp.issues.len(),
-                resp.total
-            ));
-        } else {
-            out.print_message(&format!("{} issues", resp.issues.len()));
+        match comment_list {
+            None => {
+                out.print_message(&format!("No comments on {key}."));
+            }
+            Some(cl) if cl.comments.is_empty() => {
+                out.print_message(&format!("No comments on {key}."));
+            }
+            Some(cl) => {
+                let color = use_color();
+                out.print_message(&format!("Comments on {key} ({}):", cl.total));
+                for c in &cl.comments {
+                    println!();
+                    let author = if color {
+                        c.author.display_name.bold().to_string()
+                    } else {
+                        c.author.display_name.clone()
+                    };
+                    println!("  {} — {}", author, format_date(&c.created));
+                    for line in c.body_text().lines() {
+                        println!("    {line}");
+                    }
+                }
+            }
         }
     }
     Ok(())
+}
+
+/// Fetch every page of a JQL search, returning all issues.
+pub(crate) async fn fetch_all_issues(
+    client: &JiraClient,
+    jql: &str,
+) -> Result<Vec<Issue>, ApiError> {
+    const PAGE_SIZE: usize = 100;
+    let mut all: Vec<Issue> = Vec::new();
+    let mut offset = 0;
+    loop {
+        let resp = client.search(jql, PAGE_SIZE, offset).await?;
+        let fetched = resp.issues.len();
+        all.extend(resp.issues);
+        offset += fetched;
+        if offset >= resp.total || fetched == 0 {
+            break;
+        }
+    }
+    Ok(all)
+}
+
+fn render_results(
+    out: &OutputConfig,
+    issues: &[Issue],
+    total: usize,
+    start_at: usize,
+    max_results: usize,
+    client: &JiraClient,
+    more: bool,
+) {
+    if out.json {
+        out.print_data(
+            &serde_json::to_string_pretty(&serde_json::json!({
+                "total": total,
+                "startAt": start_at,
+                "maxResults": max_results,
+                "issues": issues.iter().map(|i| issue_to_json(i, client)).collect::<Vec<_>>(),
+            }))
+            .expect("failed to serialize JSON"),
+        );
+    } else {
+        render_issue_table(issues, out);
+        if more {
+            out.print_message(&format!(
+                "Showing {}-{} of {} issues — use --limit/--offset or --all to paginate",
+                start_at + 1,
+                start_at + issues.len(),
+                total
+            ));
+        } else {
+            out.print_message(&format!("{} issues", issues.len()));
+        }
+    }
 }
 
 pub async fn show(

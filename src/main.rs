@@ -73,6 +73,10 @@ enum Command {
         /// Skip the first N results (for pagination)
         #[arg(long, default_value = "0")]
         offset: usize,
+
+        /// Fetch all pages (overrides --limit and --offset)
+        #[arg(long)]
+        all: bool,
     },
 
     /// Search for users by name or email
@@ -149,6 +153,43 @@ enum IssuesCommand {
         /// Skip the first N results (for pagination)
         #[arg(long, default_value = "0")]
         offset: usize,
+
+        /// Fetch all pages (overrides --limit and --offset)
+        #[arg(long)]
+        all: bool,
+    },
+
+    /// List issues assigned to you
+    Mine {
+        /// Filter by project key
+        #[arg(short, long)]
+        project: Option<String>,
+
+        /// Filter by status (e.g. "In Progress", "Done")
+        #[arg(short, long)]
+        status: Option<String>,
+
+        /// Filter by issue type (e.g. Bug, Story, Task)
+        #[arg(short = 't', long)]
+        issue_type: Option<String>,
+
+        /// Filter by sprint name or use "active" for open sprints
+        #[arg(long)]
+        sprint: Option<String>,
+
+        /// Maximum number of results
+        #[arg(short = 'n', long, default_value = "50")]
+        limit: usize,
+
+        /// Fetch all pages (overrides --limit)
+        #[arg(long)]
+        all: bool,
+    },
+
+    /// List comments on an issue
+    Comments {
+        /// Issue key (e.g. PROJ-123)
+        key: String,
     },
 
     /// Show a single issue in detail
@@ -415,6 +456,7 @@ async fn run(cli: Cli, out: OutputConfig) -> Result<(), Box<dyn std::error::Erro
                 jql,
                 limit,
                 offset,
+                all,
             } => {
                 commands::issues::list(
                     &client,
@@ -427,8 +469,32 @@ async fn run(cli: Cli, out: OutputConfig) -> Result<(), Box<dyn std::error::Erro
                     jql.as_deref(),
                     limit,
                     offset,
+                    all,
                 )
                 .await?
+            }
+            IssuesCommand::Mine {
+                project,
+                status,
+                issue_type,
+                sprint,
+                limit,
+                all,
+            } => {
+                commands::issues::mine(
+                    &client,
+                    &out,
+                    project.as_deref(),
+                    status.as_deref(),
+                    issue_type.as_deref(),
+                    sprint.as_deref(),
+                    limit,
+                    all,
+                )
+                .await?
+            }
+            IssuesCommand::Comments { key } => {
+                commands::issues::comments(&client, &out, &key).await?
             }
             IssuesCommand::Show { key, open } => {
                 commands::issues::show(&client, &out, &key, open).await?
@@ -542,9 +608,12 @@ async fn run(cli: Cli, out: OutputConfig) -> Result<(), Box<dyn std::error::Erro
             }
         },
 
-        Command::Search { jql, limit, offset } => {
-            commands::search::run(&client, &out, &jql, limit, offset).await?
-        }
+        Command::Search {
+            jql,
+            limit,
+            offset,
+            all,
+        } => commands::search::run(&client, &out, &jql, limit, offset, all).await?,
 
         Command::Myself => commands::myself::show(&client, &out).await?,
 

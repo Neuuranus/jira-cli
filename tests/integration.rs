@@ -950,9 +950,11 @@ async fn issues_list_with_no_results_succeeds() {
 
     let client = test_client(&server);
     let out = json_out();
-    jira_cli::commands::issues::list(&client, &out, None, None, None, None, None, None, 50, 0)
-        .await
-        .unwrap();
+    jira_cli::commands::issues::list(
+        &client, &out, None, None, None, None, None, None, 50, 0, false,
+    )
+    .await
+    .unwrap();
 }
 
 // ── Myself command ────────────────────────────────────────────────────────────
@@ -1825,6 +1827,7 @@ async fn issues_list_type_filter_adds_issuetype_to_jql() {
         None,
         50,
         0,
+        false,
     )
     .await
     .unwrap();
@@ -1865,4 +1868,153 @@ async fn show_issue_link_json_includes_plain_english_sentence() {
     // Sentence format is validated by the command logic:
     // outward: "PROJ-1 blocks PROJ-2"
     // inward:  "PROJ-1 is blocked by PROJ-3"
+}
+
+// ── --all pagination flag ─────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn issues_list_all_fetches_multiple_pages() {
+    let server = MockServer::start().await;
+    let client = test_client(&server);
+
+    let page1 = serde_json::json!({
+        "issues": [issue_fixture("PROJ-1", "Issue 1", "Open")],
+        "total": 2,
+        "startAt": 0,
+        "maxResults": 1
+    });
+    let page2 = serde_json::json!({
+        "issues": [issue_fixture("PROJ-2", "Issue 2", "Open")],
+        "total": 2,
+        "startAt": 1,
+        "maxResults": 1
+    });
+
+    // First request: startAt=0
+    Mock::given(method("GET"))
+        .and(path("/rest/api/3/search"))
+        .and(query_param("startAt", "0"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(page1))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    // Second request: startAt=1
+    Mock::given(method("GET"))
+        .and(path("/rest/api/3/search"))
+        .and(query_param("startAt", "1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(page2))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let out = json_out();
+    jira_cli::commands::issues::list(
+        &client, &out, None, None, None, None, None, None, 50, 0, true,
+    )
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn search_all_fetches_multiple_pages() {
+    let server = MockServer::start().await;
+    let client = test_client(&server);
+
+    let page1 = serde_json::json!({
+        "issues": [issue_fixture("PROJ-1", "Issue 1", "Open")],
+        "total": 2,
+        "startAt": 0,
+        "maxResults": 1
+    });
+    let page2 = serde_json::json!({
+        "issues": [issue_fixture("PROJ-2", "Issue 2", "Open")],
+        "total": 2,
+        "startAt": 1,
+        "maxResults": 1
+    });
+
+    Mock::given(method("GET"))
+        .and(path("/rest/api/3/search"))
+        .and(query_param("startAt", "0"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(page1))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path("/rest/api/3/search"))
+        .and(query_param("startAt", "1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(page2))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let out = json_out();
+    jira_cli::commands::search::run(&client, &out, "project = PROJ", 50, 0, true)
+        .await
+        .unwrap();
+}
+
+// ── issues comments subcommand ────────────────────────────────────────────────
+
+#[tokio::test]
+async fn issues_comments_returns_comment_list() {
+    let server = MockServer::start().await;
+    let client = test_client(&server);
+
+    Mock::given(method("GET"))
+        .and(path_regex("/rest/api/3/issue/PROJ-1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(issue_fixture(
+            "PROJ-1",
+            "Some issue",
+            "Open",
+        )))
+        .mount(&server)
+        .await;
+
+    let out = json_out();
+    jira_cli::commands::issues::comments(&client, &out, "PROJ-1")
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn issues_comments_empty_when_no_comments() {
+    let server = MockServer::start().await;
+    let client = test_client(&server);
+
+    let mut fixture = issue_fixture("PROJ-5", "No comments issue", "Open");
+    fixture["fields"]["comment"] = serde_json::json!({ "comments": [], "total": 0 });
+
+    Mock::given(method("GET"))
+        .and(path_regex("/rest/api/3/issue/PROJ-5"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(fixture))
+        .mount(&server)
+        .await;
+
+    let out = json_out();
+    jira_cli::commands::issues::comments(&client, &out, "PROJ-5")
+        .await
+        .unwrap();
+}
+
+// ── issues mine shorthand ─────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn issues_mine_uses_current_user_assignee_filter() {
+    let server = MockServer::start().await;
+    let client = test_client(&server);
+
+    Mock::given(method("GET"))
+        .and(path("/rest/api/3/search"))
+        .and(query_param_contains("jql", "currentUser"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(search_response(vec![])))
+        .mount(&server)
+        .await;
+
+    let out = json_out();
+    jira_cli::commands::issues::mine(&client, &out, None, None, None, None, 50, false)
+        .await
+        .unwrap();
 }
