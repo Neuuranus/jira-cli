@@ -28,7 +28,7 @@ check: lint test
 clean:
 	cargo clean
 
-install: release
+install: check release
 	cp target/release/jira ~/.local/bin/jira
 
 publish:

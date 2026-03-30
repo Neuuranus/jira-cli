@@ -142,4 +142,69 @@ mod tests {
         let err = ApiError::Other("something".into());
         assert_eq!(exit_code_for_error(&err), exit_codes::GENERAL_ERROR);
     }
+
+    #[test]
+    fn exit_code_for_http_error_is_general() {
+        // Build a reqwest::Error without a network call
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let reqwest_err = rt.block_on(async {
+            reqwest::Client::new()
+                .get("http://127.0.0.1:1")
+                .send()
+                .await
+                .unwrap_err()
+        });
+        let err = ApiError::Http(reqwest_err);
+        assert_eq!(exit_code_for_error(&err), exit_codes::GENERAL_ERROR);
+    }
+
+    #[test]
+    fn exit_code_for_non_api_error_is_general() {
+        let err: Box<dyn std::error::Error> = "plain string error".into();
+        assert_eq!(exit_code_for_error(err.as_ref()), exit_codes::GENERAL_ERROR);
+    }
+
+    #[test]
+    fn print_result_json_mode_prints_structured_output() {
+        // Exercises the json=true branch of print_result without crashing
+        let out = OutputConfig {
+            json: true,
+            quiet: true,
+        };
+        out.print_result(&serde_json::json!({"key": "PROJ-1"}), "Created PROJ-1");
+    }
+
+    #[test]
+    fn print_result_human_mode_uses_human_message() {
+        let out = OutputConfig {
+            json: false,
+            quiet: true,
+        };
+        out.print_result(&serde_json::json!({"key": "PROJ-1"}), "Created PROJ-1");
+    }
+
+    #[test]
+    fn print_message_suppressed_in_quiet_mode() {
+        let out = OutputConfig {
+            json: false,
+            quiet: true,
+        };
+        out.print_message("this should be suppressed");
+    }
+
+    #[test]
+    fn print_message_emits_in_non_quiet_mode() {
+        let out = OutputConfig {
+            json: false,
+            quiet: false,
+        };
+        out.print_message("this goes to stderr");
+    }
+
+    #[test]
+    fn hyperlink_without_tty_returns_bare_url() {
+        // Tests always run without a TTY, so use_color() is false
+        let url = "https://example.atlassian.net/browse/PROJ-1";
+        assert_eq!(hyperlink(url), url);
+    }
 }

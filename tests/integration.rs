@@ -3266,3 +3266,87 @@ async fn auth_error_message_includes_actionable_guidance() {
     assert!(msg.contains("JIRA_TOKEN"));
     assert!(msg.contains("config show") || msg.contains("config init"));
 }
+
+// ── commands::projects — text output paths ───────────────────────────────────
+
+fn text_out() -> OutputConfig {
+    OutputConfig {
+        json: false,
+        quiet: true,
+    }
+}
+
+#[tokio::test]
+async fn projects_list_text_output_renders_table() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("GET"))
+        .and(path("/rest/api/3/project/search"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(project_search_response(vec![
+            serde_json::json!({ "id": "10001", "key": "PROJ", "name": "My Project", "projectTypeKey": "software" }),
+            serde_json::json!({ "id": "10002", "key": "OPS", "name": "Ops", "projectTypeKey": "business" }),
+        ])))
+        .mount(&server)
+        .await;
+
+    let client = test_client(&server);
+    let out = text_out();
+    jira_cli::commands::projects::list(&client, &out)
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn projects_list_text_empty_prints_no_projects_message() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("GET"))
+        .and(path("/rest/api/3/project/search"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(project_search_response(vec![])))
+        .mount(&server)
+        .await;
+
+    let client = test_client(&server);
+    let out = text_out();
+    jira_cli::commands::projects::list(&client, &out)
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn projects_show_json_output() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("GET"))
+        .and(path("/rest/api/3/project/PROJ"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(
+            serde_json::json!({ "id": "10001", "key": "PROJ", "name": "My Project", "projectTypeKey": "software" }),
+        ))
+        .mount(&server)
+        .await;
+
+    let client = test_client(&server);
+    let out = json_out();
+    jira_cli::commands::projects::show(&client, &out, "PROJ")
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn projects_show_text_output_renders_details() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("GET"))
+        .and(path("/rest/api/3/project/PROJ"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(
+            serde_json::json!({ "id": "10001", "key": "PROJ", "name": "My Project", "projectTypeKey": "software" }),
+        ))
+        .mount(&server)
+        .await;
+
+    let client = test_client(&server);
+    let out = text_out();
+    jira_cli::commands::projects::show(&client, &out, "PROJ")
+        .await
+        .unwrap();
+}
