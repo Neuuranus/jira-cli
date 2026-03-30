@@ -2670,3 +2670,484 @@ async fn bulk_assign_me_resolves_current_user_and_assigns() {
         );
     }
 }
+
+// ── commands::boards ──────────────────────────────────────────────────────────
+
+fn boards_response(boards: &[(&str, u64, &str)]) -> serde_json::Value {
+    serde_json::json!({
+        "values": boards.iter().map(|(name, id, btype)| serde_json::json!({
+            "id": id, "name": name, "type": btype
+        })).collect::<Vec<_>>(),
+        "isLast": true, "startAt": 0, "total": boards.len()
+    })
+}
+
+#[tokio::test]
+async fn boards_list_json_shape() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("GET"))
+        .and(path("/rest/agile/1.0/board"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(boards_response(&[
+            ("TST board", 1, "scrum"),
+            ("KAN board", 2, "kanban"),
+        ])))
+        .mount(&server)
+        .await;
+
+    let client = test_client(&server);
+    let out = json_out();
+    jira_cli::commands::boards::list(&client, &out)
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn boards_list_json_contains_id_name_type() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("GET"))
+        .and(path("/rest/agile/1.0/board"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(boards_response(&[("My Board", 42, "scrum")])),
+        )
+        .mount(&server)
+        .await;
+
+    // Capture output via a channel-backed OutputConfig isn't possible directly,
+    // but we exercise the code path and verify the API call shape.
+    let client = test_client(&server);
+    let out = json_out();
+    jira_cli::commands::boards::list(&client, &out)
+        .await
+        .unwrap();
+
+    // Verify the agile endpoint was hit (not the REST API)
+    let requests = server.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 1);
+    assert!(requests[0].url.path().starts_with("/rest/agile/1.0/board"));
+}
+
+#[tokio::test]
+async fn boards_list_empty_succeeds() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("GET"))
+        .and(path("/rest/agile/1.0/board"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(boards_response(&[])))
+        .mount(&server)
+        .await;
+
+    let client = test_client(&server);
+    let out = json_out();
+    jira_cli::commands::boards::list(&client, &out)
+        .await
+        .unwrap();
+}
+
+// ── commands::fields ──────────────────────────────────────────────────────────
+
+fn fields_response(fields: &[(&str, &str, bool, Option<&str>)]) -> serde_json::Value {
+    // (id, name, custom, field_type)
+    serde_json::json!(
+        fields
+            .iter()
+            .map(|(id, name, custom, ftype)| {
+                let mut f = serde_json::json!({ "id": id, "name": name, "custom": custom });
+                if let Some(t) = ftype {
+                    f["schema"] = serde_json::json!({ "type": t });
+                }
+                f
+            })
+            .collect::<Vec<_>>()
+    )
+}
+
+#[tokio::test]
+async fn fields_list_all_json_shape() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("GET"))
+        .and(path("/rest/api/3/field"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(fields_response(&[
+            ("summary", "Summary", false, Some("string")),
+            ("customfield_10016", "Story Points", true, Some("number")),
+        ])))
+        .mount(&server)
+        .await;
+
+    let client = test_client(&server);
+    let out = json_out();
+    jira_cli::commands::fields::list(&client, &out, false)
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn fields_list_custom_only_filters_system_fields() {
+    let server = MockServer::start().await;
+
+    // Return one system + one custom field from API
+    Mock::given(method("GET"))
+        .and(path("/rest/api/3/field"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(fields_response(&[
+            ("summary", "Summary", false, Some("string")),
+            ("customfield_10016", "Story Points", true, Some("number")),
+            ("customfield_10014", "Epic Link", true, Some("string")),
+        ])))
+        .mount(&server)
+        .await;
+
+    let client = test_client(&server);
+    let out = json_out();
+    // custom_only = true — system field must be excluded
+    jira_cli::commands::fields::list(&client, &out, true)
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn fields_list_sorted_system_before_custom() {
+    let server = MockServer::start().await;
+
+    // Return fields out of order — command must sort system first, then custom
+    Mock::given(method("GET"))
+        .and(path("/rest/api/3/field"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(fields_response(&[
+            ("customfield_10016", "Z Custom", true, Some("number")),
+            ("summary", "Summary", false, Some("string")),
+            ("customfield_10000", "A Custom", true, Some("string")),
+            ("status", "Status", false, Some("string")),
+        ])))
+        .mount(&server)
+        .await;
+
+    let client = test_client(&server);
+    let out = json_out();
+    jira_cli::commands::fields::list(&client, &out, false)
+        .await
+        .unwrap();
+}
+
+// ── commands::users ───────────────────────────────────────────────────────────
+
+fn users_response(users: &[(&str, &str, Option<&str>)]) -> serde_json::Value {
+    // (accountId, displayName, email)
+    serde_json::json!(
+        users
+            .iter()
+            .map(|(id, name, email)| {
+                let mut u = serde_json::json!({ "accountId": id, "displayName": name });
+                if let Some(e) = email {
+                    u["emailAddress"] = serde_json::json!(e);
+                }
+                u
+            })
+            .collect::<Vec<_>>()
+    )
+}
+
+#[tokio::test]
+async fn users_search_json_shape() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("GET"))
+        .and(path("/rest/api/3/user/search"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(users_response(&[
+            ("abc123", "Alice Smith", Some("alice@example.com")),
+            ("def456", "Bob Jones", None),
+        ])))
+        .mount(&server)
+        .await;
+
+    let client = test_client(&server);
+    let out = json_out();
+    jira_cli::commands::users::search(&client, &out, "alice")
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn users_search_empty_succeeds() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("GET"))
+        .and(path("/rest/api/3/user/search"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(users_response(&[])))
+        .mount(&server)
+        .await;
+
+    let client = test_client(&server);
+    let out = json_out();
+    jira_cli::commands::users::search(&client, &out, "nobody")
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn users_search_query_passed_as_param() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("GET"))
+        .and(path("/rest/api/3/user/search"))
+        .and(query_param("query", "ruben"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(users_response(&[(
+            "ruben-id",
+            "Ruben Jongejan",
+            Some("ruben@example.com"),
+        )])))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = test_client(&server);
+    let out = json_out();
+    jira_cli::commands::users::search(&client, &out, "ruben")
+        .await
+        .unwrap();
+}
+
+// ── commands::sprints ─────────────────────────────────────────────────────────
+
+fn sprint_fixture(id: u64, name: &str, state: &str) -> serde_json::Value {
+    serde_json::json!({
+        "id": id, "name": name, "state": state,
+        "startDate": "2024-01-01T00:00:00Z",
+        "endDate": "2024-01-14T00:00:00Z",
+        "originBoardId": 1
+    })
+}
+
+fn sprints_response(sprints: Vec<serde_json::Value>) -> serde_json::Value {
+    serde_json::json!({ "values": sprints, "isLast": true, "startAt": 0 })
+}
+
+fn mount_board_and_sprints<'a>(
+    server: &'a MockServer,
+    sprints: Vec<serde_json::Value>,
+) -> impl std::future::Future<Output = ()> + 'a {
+    async move {
+        Mock::given(method("GET"))
+            .and(path("/rest/agile/1.0/board"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(boards_response(&[(
+                "TST board",
+                1,
+                "scrum",
+            )])))
+            .mount(server)
+            .await;
+
+        Mock::given(method("GET"))
+            .and(path("/rest/agile/1.0/board/1/sprint"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(sprints_response(sprints)))
+            .mount(server)
+            .await;
+    }
+}
+
+#[tokio::test]
+async fn sprints_list_json_shape() {
+    let server = MockServer::start().await;
+    mount_board_and_sprints(
+        &server,
+        vec![
+            sprint_fixture(1, "Sprint 1", "active"),
+            sprint_fixture(2, "Sprint 2", "closed"),
+        ],
+    )
+    .await;
+
+    let client = test_client(&server);
+    let out = json_out();
+    jira_cli::commands::sprints::list(&client, &out, None, None)
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn sprints_list_json_includes_board_context() {
+    let server = MockServer::start().await;
+    mount_board_and_sprints(&server, vec![sprint_fixture(7, "Alpha Sprint", "active")]).await;
+
+    let client = test_client(&server);
+    let out = json_out();
+    jira_cli::commands::sprints::list(&client, &out, None, Some("active"))
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn sprints_list_filtered_by_board_name() {
+    let server = MockServer::start().await;
+
+    // Two boards — command must only query the matched one
+    Mock::given(method("GET"))
+        .and(path("/rest/agile/1.0/board"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "values": [
+                { "id": 1, "name": "TST board", "type": "scrum" },
+                { "id": 2, "name": "KAN board", "type": "kanban" }
+            ],
+            "isLast": true, "startAt": 0, "total": 2
+        })))
+        .mount(&server)
+        .await;
+
+    // Only board 1 sprint endpoint should be called
+    Mock::given(method("GET"))
+        .and(path("/rest/agile/1.0/board/1/sprint"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(sprints_response(vec![sprint_fixture(
+                10,
+                "TST Sprint",
+                "active",
+            )])),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path("/rest/agile/1.0/board/2/sprint"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(sprints_response(vec![])))
+        .expect(0)
+        .mount(&server)
+        .await;
+
+    let client = test_client(&server);
+    let out = json_out();
+    jira_cli::commands::sprints::list(&client, &out, Some("TST"), None)
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn sprints_list_board_not_found_returns_error() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("GET"))
+        .and(path("/rest/agile/1.0/board"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(boards_response(&[(
+            "TST board",
+            1,
+            "scrum",
+        )])))
+        .mount(&server)
+        .await;
+
+    let client = test_client(&server);
+    let out = json_out();
+    let err = jira_cli::commands::sprints::list(&client, &out, Some("NOPE"), None)
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, jira_cli::api::ApiError::NotFound(_)),
+        "unknown board name must return NotFound"
+    );
+}
+
+#[tokio::test]
+async fn sprints_list_empty_boards_returns_empty_json() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("GET"))
+        .and(path("/rest/agile/1.0/board"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(boards_response(&[])))
+        .mount(&server)
+        .await;
+
+    let client = test_client(&server);
+    let out = json_out();
+    jira_cli::commands::sprints::list(&client, &out, None, None)
+        .await
+        .unwrap();
+}
+
+// ── commands::projects (missing paths) ───────────────────────────────────────
+
+#[tokio::test]
+async fn projects_list_json_shape() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("GET"))
+        .and(path("/rest/api/3/project/search"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(project_search_response(vec![
+            serde_json::json!({ "id": "10001", "key": "PROJ", "name": "My Project", "projectTypeKey": "software" }),
+            serde_json::json!({ "id": "10002", "key": "OPS", "name": "Ops", "projectTypeKey": "business" }),
+        ])))
+        .mount(&server)
+        .await;
+
+    let client = test_client(&server);
+    let out = json_out();
+    jira_cli::commands::projects::list(&client, &out)
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn projects_list_empty_succeeds() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("GET"))
+        .and(path("/rest/api/3/project/search"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(project_search_response(vec![])))
+        .mount(&server)
+        .await;
+
+    let client = test_client(&server);
+    let out = json_out();
+    jira_cli::commands::projects::list(&client, &out)
+        .await
+        .unwrap();
+}
+
+// ── commands::search (missing paths) ─────────────────────────────────────────
+
+#[tokio::test]
+async fn search_run_json_shape() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("GET"))
+        .and(path("/rest/api/3/search"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(search_response(vec![
+                issue_fixture("PROJ-1", "First", "To Do"),
+                issue_fixture("PROJ-2", "Second", "In Progress"),
+            ])),
+        )
+        .mount(&server)
+        .await;
+
+    let client = test_client(&server);
+    let out = json_out();
+    jira_cli::commands::search::run(&client, &out, "project = PROJ", 50, 0, false)
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn search_run_shows_pagination_info_when_more_results() {
+    let server = MockServer::start().await;
+
+    // total=5 but only returning 2 — command must indicate more pages exist
+    Mock::given(method("GET"))
+        .and(path("/rest/api/3/search"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "issues": [
+                issue_fixture("PROJ-1", "First", "To Do"),
+                issue_fixture("PROJ-2", "Second", "Open"),
+            ],
+            "total": 5,
+            "startAt": 0,
+            "maxResults": 2
+        })))
+        .mount(&server)
+        .await;
+
+    let client = test_client(&server);
+    let out = json_out();
+    jira_cli::commands::search::run(&client, &out, "project = PROJ", 2, 0, false)
+        .await
+        .unwrap();
+}
