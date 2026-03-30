@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 
 
+
+## [0.3.0](https://github.com/rvben/jira-cli/compare/v0.2.0...v0.3.0) - 2026-03-30
+
+### Added
+
+- **issues**: add worklog, bulk ops, and subtask support ([5383672](https://github.com/rvben/jira-cli/commit/53836728887f079934ed793a7be96665e9b152be))
+
 ## [0.2.0](https://github.com/rvben/jira-cli/compare/v0.1.0...v0.2.0) - 2026-03-30
 
 ### Added
