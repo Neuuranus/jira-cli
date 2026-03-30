@@ -2,24 +2,43 @@ use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use reqwest::header::{AUTHORIZATION, HeaderMap, HeaderValue};
 use serde::de::DeserializeOwned;
+use std::collections::BTreeMap;
 
-use super::types::*;
 use super::ApiError;
+use super::types::*;
 
 pub struct JiraClient {
     http: reqwest::Client,
     base_url: String,
+    site_url: String,
     host: String,
 }
+
+const SEARCH_FIELDS: [&str; 7] = [
+    "summary",
+    "status",
+    "assignee",
+    "priority",
+    "issuetype",
+    "created",
+    "updated",
+];
+const SEARCH_GET_JQL_LIMIT: usize = 1500;
 
 impl JiraClient {
     pub fn new(host: &str, email: &str, token: &str) -> Result<Self, ApiError> {
         // Determine the scheme. An explicit `http://` prefix is preserved as-is
         // (useful for local testing); everything else defaults to HTTPS.
         let (scheme, domain) = if host.starts_with("http://") {
-            ("http", host.trim_start_matches("http://").trim_end_matches('/'))
+            (
+                "http",
+                host.trim_start_matches("http://").trim_end_matches('/'),
+            )
         } else {
-            ("https", host.trim_start_matches("https://").trim_end_matches('/'))
+            (
+                "https",
+                host.trim_start_matches("https://").trim_end_matches('/'),
+            )
         };
 
         if domain.is_empty() {
@@ -41,11 +60,13 @@ impl JiraClient {
             .build()
             .map_err(ApiError::Http)?;
 
-        let base_url = format!("{scheme}://{domain}/rest/api/3");
+        let site_url = format!("{scheme}://{domain}");
+        let base_url = format!("{site_url}/rest/api/3");
 
         Ok(Self {
             http,
             base_url,
+            site_url,
             host: domain.to_string(),
         })
     }
@@ -54,9 +75,16 @@ impl JiraClient {
         &self.host
     }
 
+    pub fn browse_base_url(&self) -> &str {
+        &self.site_url
+    }
+
+    pub fn browse_url(&self, issue_key: &str) -> String {
+        format!("{}/browse/{issue_key}", self.browse_base_url())
+    }
+
     fn map_status(status: u16, body: String) -> ApiError {
-        // Truncate body to avoid leaking large/sensitive API responses
-        let message = truncate_error_body(&body);
+        let message = summarize_error_body(status, &body);
         match status {
             401 | 403 => ApiError::Auth(message),
             404 => ApiError::NotFound(message),
@@ -130,12 +158,25 @@ impl JiraClient {
         max_results: usize,
         start_at: usize,
     ) -> Result<SearchResponse, ApiError> {
-        let fields = "summary,status,assignee,priority,issuetype,created,updated";
-        let path = format!(
-            "search?jql={}&maxResults={max_results}&startAt={start_at}&fields={fields}",
-            percent_encode(jql)
-        );
-        self.get(&path).await
+        let fields = SEARCH_FIELDS.join(",");
+        let encoded_jql = percent_encode(jql);
+        if encoded_jql.len() <= SEARCH_GET_JQL_LIMIT {
+            let path = format!(
+                "search?jql={encoded_jql}&maxResults={max_results}&startAt={start_at}&fields={fields}"
+            );
+            self.get(&path).await
+        } else {
+            self.post(
+                "search",
+                &serde_json::json!({
+                    "jql": jql,
+                    "maxResults": max_results,
+                    "startAt": start_at,
+                    "fields": SEARCH_FIELDS,
+                }),
+            )
+            .await
+        }
     }
 
     /// Fetch a single issue by key (e.g. `PROJ-123`), including all comments.
@@ -145,8 +186,7 @@ impl JiraClient {
     /// the remaining comments.
     pub async fn get_issue(&self, key: &str) -> Result<Issue, ApiError> {
         validate_issue_key(key)?;
-        let fields =
-            "summary,status,assignee,reporter,priority,issuetype,description,labels,created,updated,comment";
+        let fields = "summary,status,assignee,reporter,priority,issuetype,description,labels,created,updated,comment";
         let path = format!("issue/{key}?fields={fields}");
         let mut issue: Issue = self.get(&path).await?;
 
@@ -232,11 +272,7 @@ impl JiraClient {
     }
 
     /// Assign an issue to a user by account ID, or unassign with `None`.
-    pub async fn assign_issue(
-        &self,
-        key: &str,
-        account_id: Option<&str>,
-    ) -> Result<(), ApiError> {
+    pub async fn assign_issue(&self, key: &str, account_id: Option<&str>) -> Result<(), ApiError> {
         validate_issue_key(key)?;
         let payload = serde_json::json!({
             "accountId": account_id
@@ -267,10 +303,7 @@ impl JiraClient {
             fields.insert("description".into(), text_to_adf(d));
         }
         if let Some(p) = priority {
-            fields.insert(
-                "priority".into(),
-                serde_json::json!({ "name": p }),
-            );
+            fields.insert("priority".into(), serde_json::json!({ "name": p }));
         }
         if fields.is_empty() {
             return Err(ApiError::InvalidInput(
@@ -293,16 +326,24 @@ impl JiraClient {
         const PAGE: usize = 50;
 
         loop {
-            let path = format!(
-                "project/search?startAt={start_at}&maxResults={PAGE}&orderBy=key"
-            );
+            let path = format!("project/search?startAt={start_at}&maxResults={PAGE}&orderBy=key");
             let page: ProjectSearchResponse = self.get(&path).await?;
-            let is_last = page.is_last || page.values.len() < PAGE;
+            let page_start = page.start_at;
+            let received = page.values.len();
+            let total = page.total;
             all.extend(page.values);
-            if is_last {
+
+            if page.is_last || all.len() >= total {
                 break;
             }
-            start_at += PAGE;
+
+            if received == 0 {
+                return Err(ApiError::Other(
+                    "Project pagination returned an empty non-terminal page".into(),
+                ));
+            }
+
+            start_at = page_start.saturating_add(received);
         }
 
         Ok(all)
@@ -326,7 +367,10 @@ fn validate_issue_key(key: &str) -> Result<(), ApiError> {
 
     let valid = !project.is_empty()
         && !number.is_empty()
-        && project.chars().next().is_some_and(|c| c.is_ascii_uppercase())
+        && project
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_ascii_uppercase())
         && project
             .chars()
             .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit())
@@ -357,7 +401,7 @@ fn percent_encode(s: &str) -> String {
     encoded
 }
 
-/// Truncate an API error body to avoid leaking large or sensitive responses.
+/// Truncate an API error body when explicitly debugging HTTP failures.
 fn truncate_error_body(body: &str) -> String {
     const MAX: usize = 200;
     if body.chars().count() <= MAX {
@@ -366,6 +410,70 @@ fn truncate_error_body(body: &str) -> String {
         let truncated: String = body.chars().take(MAX).collect();
         format!("{truncated}… (truncated)")
     }
+}
+
+fn summarize_error_body(status: u16, body: &str) -> String {
+    if should_include_raw_error_body() && !body.trim().is_empty() {
+        return truncate_error_body(body);
+    }
+
+    if let Some(message) = summarize_json_error_body(body) {
+        return message;
+    }
+
+    default_status_message(status)
+}
+
+fn summarize_json_error_body(body: &str) -> Option<String> {
+    let parsed: JiraErrorPayload = serde_json::from_str(body).ok()?;
+    let mut parts = Vec::new();
+
+    if !parsed.error_messages.is_empty() {
+        parts.push(format!(
+            "{} Jira error message(s) returned",
+            parsed.error_messages.len()
+        ));
+    }
+
+    if !parsed.errors.is_empty() {
+        let fields = parsed.errors.keys().take(5).cloned().collect::<Vec<_>>();
+        parts.push(format!(
+            "validation errors for fields: {}",
+            fields.join(", ")
+        ));
+    }
+
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join("; "))
+    }
+}
+
+fn default_status_message(status: u16) -> String {
+    match status {
+        401 | 403 => "request unauthorized".into(),
+        404 => "resource not found".into(),
+        429 => "rate limited by Jira".into(),
+        400..=499 => format!("request failed with status {status}"),
+        _ => format!("Jira request failed with status {status}"),
+    }
+}
+
+fn should_include_raw_error_body() -> bool {
+    matches!(
+        std::env::var("JIRA_DEBUG_HTTP").ok().as_deref(),
+        Some("1" | "true" | "TRUE" | "yes" | "YES")
+    )
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct JiraErrorPayload {
+    #[serde(default)]
+    error_messages: Vec<String>,
+    #[serde(default)]
+    errors: BTreeMap<String, String>,
 }
 
 #[cfg(test)]
@@ -399,7 +507,7 @@ mod tests {
     #[test]
     fn validate_issue_key_invalid() {
         assert!(validate_issue_key("proj-123").is_err()); // lowercase
-        assert!(validate_issue_key("PROJ123").is_err());  // no dash
+        assert!(validate_issue_key("PROJ123").is_err()); // no dash
         assert!(validate_issue_key("PROJ-abc").is_err()); // non-numeric suffix
         assert!(validate_issue_key("../etc/passwd").is_err());
         assert!(validate_issue_key("").is_err());
@@ -418,5 +526,33 @@ mod tests {
         let result = truncate_error_body(&body);
         assert!(result.len() < body.len());
         assert!(result.ends_with("(truncated)"));
+    }
+
+    #[test]
+    fn summarize_json_error_body_redacts_values() {
+        let body = serde_json::json!({
+            "errorMessages": ["JQL validation failed"],
+            "errors": {
+                "summary": "Summary must not contain secret project name",
+                "description": "Description cannot include api token"
+            }
+        })
+        .to_string();
+
+        let message = summarize_error_body(400, &body);
+        assert!(message.contains("1 Jira error message(s) returned"));
+        assert!(message.contains("summary"));
+        assert!(message.contains("description"));
+        assert!(!message.contains("secret project name"));
+        assert!(!message.contains("api token"));
+    }
+
+    #[test]
+    fn browse_url_preserves_explicit_http_hosts() {
+        let client = JiraClient::new("http://localhost:8080", "me@example.com", "token").unwrap();
+        assert_eq!(
+            client.browse_url("PROJ-1"),
+            "http://localhost:8080/browse/PROJ-1"
+        );
     }
 }

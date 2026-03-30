@@ -26,7 +26,13 @@ pub async fn list(client: &JiraClient, out: &OutputConfig) -> Result<(), ApiErro
         }
 
         let color = use_color();
-        let key_w = projects.iter().map(|p| p.key.len()).max().unwrap_or(3).max(3) + 2;
+        let key_w = projects
+            .iter()
+            .map(|p| p.key.len())
+            .max()
+            .unwrap_or(3)
+            .max(3)
+            + 2;
         let name_w = projects
             .iter()
             .map(|p| p.name.len())

@@ -23,7 +23,7 @@ pub async fn run(
                 "total": resp.total,
                 "startAt": resp.start_at,
                 "maxResults": resp.max_results,
-                "issues": resp.issues.iter().map(|i| issue_to_json(i, client.host())).collect::<Vec<_>>(),
+                "issues": resp.issues.iter().map(|i| issue_to_json(i, client)).collect::<Vec<_>>(),
             }))
             .expect("failed to serialize JSON"),
         );

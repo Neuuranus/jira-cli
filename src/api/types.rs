@@ -47,9 +47,9 @@ impl Issue {
         }
     }
 
-    /// Construct the browser URL from the host.
-    pub fn browser_url(&self, host: &str) -> String {
-        format!("https://{host}/browse/{}", self.key)
+    /// Construct the browser URL from the site base URL.
+    pub fn browser_url(&self, site_url: &str) -> String {
+        format!("{site_url}/browse/{}", self.key)
     }
 }
 
@@ -137,6 +137,10 @@ pub struct Project {
 pub struct ProjectSearchResponse {
     pub values: Vec<Project>,
     pub total: usize,
+    #[serde(default)]
+    pub start_at: usize,
+    #[serde(default)]
+    pub max_results: usize,
     pub is_last: bool,
 }
 
@@ -256,7 +260,14 @@ fn collect_text(node: &serde_json::Value, buf: &mut String) {
     // Block-level nodes get a trailing newline
     if matches!(
         node_type,
-        "paragraph" | "heading" | "bulletList" | "orderedList" | "listItem" | "codeBlock" | "blockquote" | "rule"
+        "paragraph"
+            | "heading"
+            | "bulletList"
+            | "orderedList"
+            | "listItem"
+            | "codeBlock"
+            | "blockquote"
+            | "rule"
     ) && !buf.ends_with('\n')
     {
         buf.push('\n');

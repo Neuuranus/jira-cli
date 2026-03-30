@@ -13,7 +13,10 @@ fn test_client(server: &MockServer) -> JiraClient {
 }
 
 fn json_out() -> OutputConfig {
-    OutputConfig { json: true, quiet: true }
+    OutputConfig {
+        json: true,
+        quiet: true,
+    }
 }
 
 fn issue_fixture(key: &str, summary: &str, status: &str) -> serde_json::Value {
@@ -82,7 +85,10 @@ async fn client_sends_basic_auth_header() {
 
     Mock::given(method("GET"))
         .and(path("/rest/api/3/project/search"))
-        .and(header("authorization", "Basic dGVzdEBleGFtcGxlLmNvbTp0ZXN0LXRva2Vu"))
+        .and(header(
+            "authorization",
+            "Basic dGVzdEBleGFtcGxlLmNvbTp0ZXN0LXRva2Vu",
+        ))
         .respond_with(ResponseTemplate::new(200).set_body_json(project_search_response(vec![])))
         .expect(1)
         .mount(&server)
@@ -99,7 +105,14 @@ async fn get_issue_rejects_invalid_key() {
     let server = MockServer::start().await;
     let client = test_client(&server);
 
-    let cases = ["proj-123", "PROJ123", "PROJ-abc", "../etc/passwd", "", "1PROJ-123"];
+    let cases = [
+        "proj-123",
+        "PROJ123",
+        "PROJ-abc",
+        "../etc/passwd",
+        "",
+        "1PROJ-123",
+    ];
     for key in cases {
         let err = client.get_issue(key).await.unwrap_err();
         assert!(
@@ -115,7 +128,9 @@ async fn get_issue_accepts_valid_key() {
 
     Mock::given(method("GET"))
         .and(path_regex(r"/rest/api/3/issue/PROJ-\d+"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(issue_fixture("PROJ-123", "Fix bug", "Open")))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(issue_fixture("PROJ-123", "Fix bug", "Open")),
+        )
         .mount(&server)
         .await;
 
@@ -131,7 +146,11 @@ async fn get_issue_accepts_key_with_digit_in_project_part() {
 
     Mock::given(method("GET"))
         .and(path_regex(r"/rest/api/3/issue/ABC2-\d+"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(issue_fixture("ABC2-1", "Digit key", "Open")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(issue_fixture(
+            "ABC2-1",
+            "Digit key",
+            "Open",
+        )))
         .mount(&server)
         .await;
 
@@ -149,14 +168,12 @@ async fn search_returns_issues_with_pagination_metadata() {
 
     Mock::given(method("GET"))
         .and(path("/rest/api/3/search"))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "issues": [issue],
-                "total": 42,
-                "startAt": 0,
-                "maxResults": 1,
-            })),
-        )
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "issues": [issue],
+            "total": 42,
+            "startAt": 0,
+            "maxResults": 1,
+        })))
         .mount(&server)
         .await;
 
@@ -200,6 +217,23 @@ async fn search_passes_offset_as_start_at() {
     client.search("project = PROJ", 25, 25).await.unwrap();
 }
 
+#[tokio::test]
+async fn search_uses_post_for_long_jql_queries() {
+    let server = MockServer::start().await;
+    let long_clause = "x".repeat(2000);
+    let jql = format!("summary ~ \"{long_clause}\"");
+
+    Mock::given(method("POST"))
+        .and(path("/rest/api/3/search"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(search_response(vec![])))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = test_client(&server);
+    client.search(&jql, 50, 0).await.unwrap();
+}
+
 // ── Issue detail ──────────────────────────────────────────────────────────────
 
 #[tokio::test]
@@ -208,10 +242,11 @@ async fn show_issue_includes_description_and_comments() {
 
     Mock::given(method("GET"))
         .and(path("/rest/api/3/issue/PROJ-42"))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .set_body_json(issue_fixture("PROJ-42", "Important bug", "In Progress")),
-        )
+        .respond_with(ResponseTemplate::new(200).set_body_json(issue_fixture(
+            "PROJ-42",
+            "Important bug",
+            "In Progress",
+        )))
         .mount(&server)
         .await;
 
@@ -234,10 +269,11 @@ async fn show_issue_json_contains_expected_fields() {
 
     Mock::given(method("GET"))
         .and(path("/rest/api/3/issue/PROJ-42"))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .set_body_json(issue_fixture("PROJ-42", "Important bug", "In Progress")),
-        )
+        .respond_with(ResponseTemplate::new(200).set_body_json(issue_fixture(
+            "PROJ-42",
+            "Important bug",
+            "In Progress",
+        )))
         .mount(&server)
         .await;
 
@@ -288,7 +324,15 @@ async fn create_issue_posts_correct_payload() {
 
     let client = test_client(&server);
     let resp = client
-        .create_issue("PROJ", "Bug", "Something broke", Some("Details here"), None, None, None)
+        .create_issue(
+            "PROJ",
+            "Bug",
+            "Something broke",
+            Some("Details here"),
+            None,
+            None,
+            None,
+        )
         .await
         .unwrap();
     assert_eq!(resp.key, "PROJ-42");
@@ -496,7 +540,10 @@ async fn transition_not_found_returns_structured_error() {
     assert!(matches!(err, ApiError::NotFound(_)));
     // Error message must reference the missing transition name
     if let ApiError::NotFound(msg) = &err {
-        assert!(msg.contains("Nonexistent"), "expected transition name in error, got: {msg}");
+        assert!(
+            msg.contains("Nonexistent"),
+            "expected transition name in error, got: {msg}"
+        );
     }
 }
 
@@ -521,6 +568,53 @@ async fn list_projects_returns_all_projects() {
     assert_eq!(projects[0].key, "ALPHA");
     assert_eq!(projects[0].name, "Alpha Project");
     assert_eq!(projects[1].key, "BETA");
+}
+
+#[tokio::test]
+async fn list_projects_handles_short_non_terminal_pages() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("GET"))
+        .and(path("/rest/api/3/project/search"))
+        .and(query_param("startAt", "0"))
+        .and(query_param("maxResults", "50"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "values": [
+                { "id": "10000", "key": "ALPHA", "name": "Alpha Project", "projectTypeKey": "software" },
+                { "id": "10001", "key": "BETA", "name": "Beta Project", "projectTypeKey": "business" }
+            ],
+            "total": 3,
+            "startAt": 0,
+            "maxResults": 50,
+            "isLast": false
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path("/rest/api/3/project/search"))
+        .and(query_param("startAt", "2"))
+        .and(query_param("maxResults", "50"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "values": [
+                { "id": "10002", "key": "GAMMA", "name": "Gamma Project", "projectTypeKey": "service_desk" }
+            ],
+            "total": 3,
+            "startAt": 2,
+            "maxResults": 50,
+            "isLast": true
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = test_client(&server);
+    let projects = client.list_projects().await.unwrap();
+    assert_eq!(projects.len(), 3);
+    assert_eq!(projects[0].key, "ALPHA");
+    assert_eq!(projects[1].key, "BETA");
+    assert_eq!(projects[2].key, "GAMMA");
 }
 
 // ── Error mapping ──────────────────────────────────────────────────────────────
@@ -600,7 +694,11 @@ async fn search_encodes_jql_in_query_string() {
     let client = test_client(&server);
     // JQL with special characters — should not panic or produce a malformed URL
     client
-        .search(r#"project = "My Project" AND status = "In Progress""#, 10, 0)
+        .search(
+            r#"project = "My Project" AND status = "In Progress""#,
+            10,
+            0,
+        )
         .await
         .unwrap();
 }
@@ -628,7 +726,10 @@ fn text_to_adf_blank_line_produces_empty_content_array() {
     let blank = &content[1];
     assert_eq!(blank["type"], "paragraph");
     let blank_content = blank["content"].as_array().unwrap();
-    assert!(blank_content.is_empty(), "blank line must produce empty content, not text nodes");
+    assert!(
+        blank_content.is_empty(),
+        "blank line must produce empty content, not text nodes"
+    );
 }
 
 #[test]
@@ -652,7 +753,10 @@ fn escape_jql_prevents_injection() {
     let escaped = escape_jql(malicious);
     // The double quote must be backslash-escaped so it cannot break out of a JQL string literal.
     // After escaping, `Done" OR 1=1 --` becomes `Done\" OR 1=1 --`.
-    assert!(escaped.contains("\\\""), "double quote must be backslash-escaped");
+    assert!(
+        escaped.contains("\\\""),
+        "double quote must be backslash-escaped"
+    );
     // The escaped value must start with the prefix up to and including the escaped quote,
     // confirming the quote is inside the escaped string, not acting as a string terminator.
     assert!(
@@ -686,7 +790,10 @@ async fn update_issue_requires_at_least_one_field() {
     let server = MockServer::start().await;
     let client = test_client(&server);
 
-    let err = client.update_issue("PROJ-1", None, None, None).await.unwrap_err();
+    let err = client
+        .update_issue("PROJ-1", None, None, None)
+        .await
+        .unwrap_err();
     assert!(matches!(err, ApiError::InvalidInput(_)));
 }
 
@@ -740,7 +847,9 @@ async fn issue_json_includes_assignee_account_id() {
 
     let client = test_client(&server);
     let issue = client.get_issue("PROJ-1").await.unwrap();
-    let account_id = issue.fields.assignee
+    let account_id = issue
+        .fields
+        .assignee
         .as_ref()
         .and_then(|a| a.account_id.as_deref());
     assert_eq!(account_id, Some("alice-account-id-123"));
@@ -764,7 +873,10 @@ async fn transition_not_found_produces_no_stdout_data() {
         .await;
 
     let client = test_client(&server);
-    let out = OutputConfig { json: true, quiet: true };
+    let out = OutputConfig {
+        json: true,
+        quiet: true,
+    };
     let err = jira_cli::commands::issues::transition(&client, &out, "PROJ-1", "Nonexistent")
         .await
         .unwrap_err();
@@ -841,7 +953,9 @@ async fn myself_command_returns_account_info() {
 
     let client = test_client(&server);
     let out = json_out();
-    jira_cli::commands::myself::show(&client, &out).await.unwrap();
+    jira_cli::commands::myself::show(&client, &out)
+        .await
+        .unwrap();
 }
 
 // ── Projects show ─────────────────────────────────────────────────────────────
@@ -864,5 +978,7 @@ async fn projects_show_returns_project_details() {
 
     let client = test_client(&server);
     let out = json_out();
-    jira_cli::commands::projects::show(&client, &out, "PROJ").await.unwrap();
+    jira_cli::commands::projects::show(&client, &out, "PROJ")
+        .await
+        .unwrap();
 }

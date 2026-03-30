@@ -24,7 +24,7 @@ pub async fn list(
                 "total": resp.total,
                 "startAt": resp.start_at,
                 "maxResults": resp.max_results,
-                "issues": resp.issues.iter().map(|i| issue_to_json(i, client.host())).collect::<Vec<_>>(),
+                "issues": resp.issues.iter().map(|i| issue_to_json(i, client)).collect::<Vec<_>>(),
             }))
             .expect("failed to serialize JSON"),
         );
@@ -53,12 +53,12 @@ pub async fn show(
     let issue = client.get_issue(key).await?;
 
     if open {
-        open_in_browser(&issue.browser_url(client.host()));
+        open_in_browser(&client.browse_url(&issue.key));
     }
 
     if out.json {
         out.print_data(
-            &serde_json::to_string_pretty(&issue_detail_to_json(&issue, client.host()))
+            &serde_json::to_string_pretty(&issue_detail_to_json(&issue, client))
                 .expect("failed to serialize JSON"),
         );
     } else {
@@ -80,9 +80,17 @@ pub async fn create(
     assignee: Option<&str>,
 ) -> Result<(), ApiError> {
     let resp = client
-        .create_issue(project, issue_type, summary, description, priority, labels, assignee)
+        .create_issue(
+            project,
+            issue_type,
+            summary,
+            description,
+            priority,
+            labels,
+            assignee,
+        )
         .await?;
-    let url = format!("https://{}/browse/{}", client.host(), resp.key);
+    let url = client.browse_url(&resp.key);
     out.print_result(
         &serde_json::json!({ "key": resp.key, "id": resp.id, "url": url }),
         &resp.key,
@@ -98,7 +106,9 @@ pub async fn update(
     description: Option<&str>,
     priority: Option<&str>,
 ) -> Result<(), ApiError> {
-    client.update_issue(key, summary, description, priority).await?;
+    client
+        .update_issue(key, summary, description, priority)
+        .await?;
     out.print_result(
         &serde_json::json!({ "key": key, "updated": true }),
         &format!("Updated {key}"),
@@ -113,7 +123,7 @@ pub async fn comment(
     body: &str,
 ) -> Result<(), ApiError> {
     let c = client.add_comment(key, body).await?;
-    let url = format!("https://{}/browse/{}", client.host(), key);
+    let url = client.browse_url(key);
     out.print_result(
         &serde_json::json!({
             "id": c.id,
@@ -177,9 +187,7 @@ pub async fn list_transitions(
     let ts = client.get_transitions(key).await?;
 
     if out.json {
-        out.print_data(
-            &serde_json::to_string_pretty(&ts).expect("failed to serialize JSON"),
-        );
+        out.print_data(&serde_json::to_string_pretty(&ts).expect("failed to serialize JSON"));
     } else {
         let color = use_color();
         let header = format!("{:<6} {}", "ID", "Name");
@@ -235,9 +243,27 @@ pub(crate) fn render_issue_table(issues: &[Issue], out: &OutputConfig) {
     let term_width = terminal_width();
 
     let key_w = issues.iter().map(|i| i.key.len()).max().unwrap_or(4).max(4) + 1;
-    let status_w = issues.iter().map(|i| i.status().len()).max().unwrap_or(6).max(6).min(14) + 2;
-    let assignee_w = issues.iter().map(|i| i.assignee().len()).max().unwrap_or(8).max(8).min(18) + 2;
-    let type_w = issues.iter().map(|i| i.issue_type().len()).max().unwrap_or(4).max(4).min(12) + 2;
+    let status_w = issues
+        .iter()
+        .map(|i| i.status().len())
+        .max()
+        .unwrap_or(6)
+        .clamp(6, 14)
+        + 2;
+    let assignee_w = issues
+        .iter()
+        .map(|i| i.assignee().len())
+        .max()
+        .unwrap_or(8)
+        .clamp(8, 18)
+        + 2;
+    let type_w = issues
+        .iter()
+        .map(|i| i.issue_type().len())
+        .max()
+        .unwrap_or(4)
+        .clamp(4, 12)
+        + 2;
 
     // Give remaining width to summary, minimum 20
     let fixed = key_w + 1 + status_w + 1 + assignee_w + 1 + type_w + 1;
@@ -339,11 +365,11 @@ fn render_issue_detail(issue: &Issue) {
 
 // ── JSON serialization ────────────────────────────────────────────────────────
 
-pub(crate) fn issue_to_json(issue: &Issue, host: &str) -> serde_json::Value {
+pub(crate) fn issue_to_json(issue: &Issue, client: &JiraClient) -> serde_json::Value {
     serde_json::json!({
         "key": issue.key,
         "id": issue.id,
-        "url": issue.browser_url(host),
+        "url": client.browse_url(&issue.key),
         "summary": issue.summary(),
         "status": issue.status(),
         "assignee": {
@@ -357,7 +383,7 @@ pub(crate) fn issue_to_json(issue: &Issue, host: &str) -> serde_json::Value {
     })
 }
 
-fn issue_detail_to_json(issue: &Issue, host: &str) -> serde_json::Value {
+fn issue_detail_to_json(issue: &Issue, client: &JiraClient) -> serde_json::Value {
     let comments: Vec<serde_json::Value> = issue
         .fields
         .comment
@@ -384,7 +410,7 @@ fn issue_detail_to_json(issue: &Issue, host: &str) -> serde_json::Value {
     serde_json::json!({
         "key": issue.key,
         "id": issue.id,
-        "url": issue.browser_url(host),
+        "url": client.browse_url(&issue.key),
         "summary": issue.summary(),
         "status": issue.status(),
         "type": issue.issue_type(),
@@ -468,7 +494,9 @@ fn open_in_browser(url: &str) {
     #[cfg(target_os = "linux")]
     let result = std::process::Command::new("xdg-open").arg(url).status();
     #[cfg(target_os = "windows")]
-    let result = std::process::Command::new("cmd").args(["/c", "start", url]).status();
+    let result = std::process::Command::new("cmd")
+        .args(["/c", "start", url])
+        .status();
 
     #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
     if let Err(e) = result {
