@@ -33,7 +33,16 @@ cargo install --path .
 
 ## Configuration
 
-Create `~/.config/jira/config.toml`:
+Create the config file reported by `jira init`, `jira config init`, or
+`jira config show`.
+
+Default locations:
+
+- Unix-like systems: `~/.config/jira/config.toml`
+- Unix-like systems with `XDG_CONFIG_HOME` set: `$XDG_CONFIG_HOME/jira/config.toml`
+- Windows: `%APPDATA%\jira\config.toml`
+
+Example:
 
 ```toml
 [default]
@@ -42,11 +51,17 @@ email = "me@example.com"
 token = "your-api-token"
 ```
 
+Run `jira config show` to confirm the resolved path and active credentials.
+
 Get your API token at: https://id.atlassian.com/manage-profile/security/api-tokens
 
 ```sh
+# Unix-like systems only
 chmod 600 ~/.config/jira/config.toml
 ```
+
+On Windows, keep the file in your per-user `%APPDATA%` directory rather than a
+shared folder.
 
 Or use environment variables:
 
@@ -102,6 +117,7 @@ jira projects show MYAPP
 jira myself
 
 # Config
+jira init
 jira config show
 jira config init
 ```

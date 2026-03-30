@@ -4,6 +4,7 @@ use std::path::PathBuf;
 use serde::Deserialize;
 
 use crate::api::ApiError;
+use crate::output::OutputConfig;
 
 #[derive(Debug, Deserialize, Default, Clone)]
 pub struct ProfileConfig {
@@ -14,10 +15,23 @@ pub struct ProfileConfig {
 
 #[derive(Debug, Deserialize, Default)]
 struct RawConfig {
-    #[serde(flatten)]
+    #[serde(default)]
     default: ProfileConfig,
     #[serde(default)]
     profiles: BTreeMap<String, ProfileConfig>,
+    host: Option<String>,
+    email: Option<String>,
+    token: Option<String>,
+}
+
+impl RawConfig {
+    fn default_profile(&self) -> ProfileConfig {
+        ProfileConfig {
+            host: self.default.host.clone().or_else(|| self.host.clone()),
+            email: self.default.email.clone().or_else(|| self.email.clone()),
+            token: self.default.token.clone().or_else(|| self.token.clone()),
+        }
+    }
 }
 
 /// Resolved credentials for a single profile.
@@ -41,27 +55,26 @@ impl Config {
     ) -> Result<Self, ApiError> {
         let file_profile = load_file_profile(profile_arg.as_deref())?;
 
-        let host = host_arg
-            .or_else(|| std::env::var("JIRA_HOST").ok())
-            .or(file_profile.host)
+        let host = normalize_value(host_arg)
+            .or_else(|| env_var("JIRA_HOST"))
+            .or_else(|| normalize_value(file_profile.host))
             .ok_or_else(|| {
                 ApiError::InvalidInput(
                     "No Jira host configured. Set JIRA_HOST or run `jira config init`.".into(),
                 )
             })?;
 
-        let email = email_arg
-            .or_else(|| std::env::var("JIRA_EMAIL").ok())
-            .or(file_profile.email)
+        let email = normalize_value(email_arg)
+            .or_else(|| env_var("JIRA_EMAIL"))
+            .or_else(|| normalize_value(file_profile.email))
             .ok_or_else(|| {
                 ApiError::InvalidInput(
                     "No email configured. Set JIRA_EMAIL or run `jira config init`.".into(),
                 )
             })?;
 
-        let token = std::env::var("JIRA_TOKEN")
-            .ok()
-            .or(file_profile.token)
+        let token = env_var("JIRA_TOKEN")
+            .or_else(|| normalize_value(file_profile.token))
             .ok_or_else(|| {
                 ApiError::InvalidInput(
                     "No API token configured. Set JIRA_TOKEN or run `jira config init`.".into(),
@@ -73,11 +86,68 @@ impl Config {
 }
 
 fn config_path() -> PathBuf {
-    dirs::config_dir()
-        .or_else(|| dirs::home_dir().map(|h| h.join(".config")))
+    config_dir()
         .unwrap_or_else(|| PathBuf::from(".config"))
         .join("jira")
         .join("config.toml")
+}
+
+pub fn schema_config_path() -> String {
+    config_path().display().to_string()
+}
+
+pub fn schema_config_path_description() -> &'static str {
+    #[cfg(target_os = "windows")]
+    {
+        "Resolved at runtime to %APPDATA%\\jira\\config.toml by default."
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        "Resolved at runtime to $XDG_CONFIG_HOME/jira/config.toml when set, otherwise ~/.config/jira/config.toml."
+    }
+}
+
+pub fn recommended_permissions(path: &std::path::Path) -> String {
+    #[cfg(target_os = "windows")]
+    {
+        format!(
+            "Store this file in your per-user AppData directory ({}) and keep it out of shared folders; Windows applies per-user ACLs there by default.",
+            path.display()
+        )
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        format!("chmod 600 {}", path.display())
+    }
+}
+
+pub fn schema_recommended_permissions_example() -> &'static str {
+    #[cfg(target_os = "windows")]
+    {
+        "Keep the file in your per-user %APPDATA% directory and out of shared folders."
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        "chmod 600 /path/to/config.toml"
+    }
+}
+
+fn config_dir() -> Option<PathBuf> {
+    #[cfg(target_os = "windows")]
+    {
+        dirs::config_dir()
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        std::env::var_os("XDG_CONFIG_HOME")
+            .filter(|value| !value.is_empty())
+            .map(PathBuf::from)
+            .or_else(|| dirs::home_dir().map(|home| home.join(".config")))
+    }
 }
 
 fn load_file_profile(profile: Option<&str>) -> Result<ProfileConfig, ApiError> {
@@ -91,9 +161,9 @@ fn load_file_profile(profile: Option<&str>) -> Result<ProfileConfig, ApiError> {
     let raw: RawConfig = toml::from_str(&content)
         .map_err(|e| ApiError::Other(format!("Failed to parse config: {e}")))?;
 
-    let profile_name = profile
-        .map(String::from)
-        .or_else(|| std::env::var("JIRA_PROFILE").ok());
+    let profile_name = normalize_str(profile)
+        .map(str::to_owned)
+        .or_else(|| env_var("JIRA_PROFILE"));
 
     match profile_name {
         Some(name) => {
@@ -106,51 +176,81 @@ fn load_file_profile(profile: Option<&str>) -> Result<ProfileConfig, ApiError> {
                 ))
             })
         }
-        None => Ok(raw.default),
+        None => Ok(raw.default_profile()),
     }
 }
 
 /// Print the config file path and current resolved values (masking the token).
-pub fn show(host_arg: Option<String>, email_arg: Option<String>, profile_arg: Option<String>) {
+pub fn show(
+    out: &OutputConfig,
+    host_arg: Option<String>,
+    email_arg: Option<String>,
+    profile_arg: Option<String>,
+) -> Result<(), ApiError> {
     let path = config_path();
-    eprintln!("Config file: {}", path.display());
+    let cfg = Config::load(host_arg, email_arg, profile_arg)?;
+    let masked = mask_token(&cfg.token);
 
-    match Config::load(host_arg, email_arg, profile_arg) {
-        Ok(cfg) => {
-            let masked = mask_token(&cfg.token);
-            println!("host:  {}", cfg.host);
-            println!("email: {}", cfg.email);
-            println!("token: {masked}");
-        }
-        Err(e) => {
-            eprintln!("Config error: {e}");
-        }
+    if out.json {
+        out.print_data(
+            &serde_json::to_string_pretty(&serde_json::json!({
+                "configPath": path,
+                "host": cfg.host,
+                "email": cfg.email,
+                "tokenMasked": masked,
+            }))
+            .expect("failed to serialize JSON"),
+        );
+    } else {
+        out.print_message(&format!("Config file: {}", path.display()));
+        out.print_data(&format!(
+            "host:  {}\nemail: {}\ntoken: {masked}",
+            cfg.host, cfg.email
+        ));
     }
+    Ok(())
 }
 
 /// Print example config file and instructions for obtaining an API token.
-pub fn init() {
+pub fn init(out: &OutputConfig) {
     let path = config_path();
-    println!("Create or edit: {}", path.display());
-    println!();
-    println!("Example config:");
-    println!();
-    println!("[default]");
-    println!("host  = \"mycompany.atlassian.net\"");
-    println!("email = \"me@example.com\"");
-    println!("token = \"your-api-token\"");
-    println!();
-    println!("# Optional named profiles:");
-    println!("# [profiles.work]");
-    println!("# host  = \"work.atlassian.net\"");
-    println!("# email = \"me@work.com\"");
-    println!("# token = \"work-token\"");
-    println!();
-    println!(
-        "Get your API token at: https://id.atlassian.com/manage-profile/security/api-tokens"
-    );
-    println!();
-    println!("Permissions: chmod 600 {}", path.display());
+    let path_resolution = schema_config_path_description();
+    let permission_advice = recommended_permissions(&path);
+    let example = serde_json::json!({
+        "default": {
+            "host": "mycompany.atlassian.net",
+            "email": "me@example.com",
+            "token": "your-api-token",
+        },
+        "profiles": {
+            "work": {
+                "host": "work.atlassian.net",
+                "email": "me@work.com",
+                "token": "work-token",
+            }
+        }
+    });
+
+    if out.json {
+        out.print_data(
+            &serde_json::to_string_pretty(&serde_json::json!({
+                "configPath": path,
+                "pathResolution": path_resolution,
+                "tokenInstructions": "https://id.atlassian.com/manage-profile/security/api-tokens",
+                "recommendedPermissions": permission_advice,
+                "example": example,
+            }))
+            .expect("failed to serialize JSON"),
+        );
+        return;
+    }
+
+    out.print_data(&format!(
+        "Create or edit: {}\nPath resolution: {}\n\nExample config:\n\n[default]\nhost  = \"mycompany.atlassian.net\"\nemail = \"me@example.com\"\ntoken = \"your-api-token\"\n\n# Optional named profiles:\n# [profiles.work]\n# host  = \"work.atlassian.net\"\n# email = \"me@work.com\"\n# token = \"work-token\"\n\nGet your API token at: https://id.atlassian.com/manage-profile/security/api-tokens\n\nPermissions: {}",
+        path.display(),
+        path_resolution,
+        permission_advice,
+    ));
 }
 
 /// Mask a token for display, showing only the last 4 characters.
@@ -167,9 +267,39 @@ fn mask_token(token: &str) -> String {
     }
 }
 
+fn env_var(name: &str) -> Option<String> {
+    std::env::var(name)
+        .ok()
+        .and_then(|value| normalize_value(Some(value)))
+}
+
+fn normalize_value(value: Option<String>) -> Option<String> {
+    value.and_then(|value| {
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        }
+    })
+}
+
+fn normalize_str(value: Option<&str>) -> Option<&str> {
+    value.and_then(|value| {
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed)
+        }
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::{EnvVarGuard, ProcessEnvLock, set_config_dir_env, write_config};
+    use tempfile::TempDir;
 
     #[test]
     fn mask_token_long() {
@@ -189,5 +319,95 @@ mod tests {
         let token = "token-日本語-end";
         let result = mask_token(token);
         assert!(result.starts_with("***"));
+    }
+
+    #[test]
+    #[cfg(not(target_os = "windows"))]
+    fn config_path_prefers_xdg_config_home() {
+        let _env = ProcessEnvLock::acquire().unwrap();
+        let dir = TempDir::new().unwrap();
+        let _config_dir = set_config_dir_env(dir.path());
+
+        assert_eq!(config_path(), dir.path().join("jira").join("config.toml"));
+    }
+
+    #[test]
+    fn load_ignores_blank_env_vars_and_falls_back_to_file() {
+        let _env = ProcessEnvLock::acquire().unwrap();
+        let dir = TempDir::new().unwrap();
+        write_config(
+            dir.path(),
+            r#"
+[default]
+host = "work.atlassian.net"
+email = "me@example.com"
+token = "secret-token"
+"#,
+        )
+        .unwrap();
+
+        let _config_dir = set_config_dir_env(dir.path());
+        let _host = EnvVarGuard::set("JIRA_HOST", "   ");
+        let _email = EnvVarGuard::set("JIRA_EMAIL", "");
+        let _token = EnvVarGuard::set("JIRA_TOKEN", " ");
+        let _profile = EnvVarGuard::unset("JIRA_PROFILE");
+
+        let cfg = Config::load(None, None, None).unwrap();
+        assert_eq!(cfg.host, "work.atlassian.net");
+        assert_eq!(cfg.email, "me@example.com");
+        assert_eq!(cfg.token, "secret-token");
+    }
+
+    #[test]
+    fn load_accepts_documented_default_section() {
+        let _env = ProcessEnvLock::acquire().unwrap();
+        let dir = TempDir::new().unwrap();
+        write_config(
+            dir.path(),
+            r#"
+[default]
+host = "example.atlassian.net"
+email = "me@example.com"
+token = "secret-token"
+"#,
+        )
+        .unwrap();
+
+        let _config_dir = set_config_dir_env(dir.path());
+        let _host = EnvVarGuard::unset("JIRA_HOST");
+        let _email = EnvVarGuard::unset("JIRA_EMAIL");
+        let _token = EnvVarGuard::unset("JIRA_TOKEN");
+        let _profile = EnvVarGuard::unset("JIRA_PROFILE");
+
+        let cfg = Config::load(None, None, None).unwrap();
+        assert_eq!(cfg.host, "example.atlassian.net");
+        assert_eq!(cfg.email, "me@example.com");
+        assert_eq!(cfg.token, "secret-token");
+    }
+
+    #[test]
+    fn load_treats_blank_env_vars_as_missing_when_no_file_exists() {
+        let _env = ProcessEnvLock::acquire().unwrap();
+        let dir = TempDir::new().unwrap();
+        let _config_dir = set_config_dir_env(dir.path());
+        let _host = EnvVarGuard::set("JIRA_HOST", "");
+        let _email = EnvVarGuard::set("JIRA_EMAIL", "");
+        let _token = EnvVarGuard::set("JIRA_TOKEN", "");
+        let _profile = EnvVarGuard::unset("JIRA_PROFILE");
+
+        let err = Config::load(None, None, None).unwrap_err();
+        assert!(matches!(err, ApiError::InvalidInput(_)));
+        assert!(err.to_string().contains("No Jira host configured"));
+    }
+
+    #[test]
+    fn permission_guidance_matches_platform() {
+        let guidance = recommended_permissions(std::path::Path::new("/tmp/jira/config.toml"));
+
+        #[cfg(target_os = "windows")]
+        assert!(guidance.contains("AppData"));
+
+        #[cfg(not(target_os = "windows"))]
+        assert!(guidance.starts_with("chmod 600 "));
     }
 }

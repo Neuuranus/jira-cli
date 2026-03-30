@@ -118,7 +118,10 @@ mod tests {
 
     #[test]
     fn exit_code_for_api_error() {
-        let err = ApiError::Api { status: 500, message: "Internal Server Error".into() };
+        let err = ApiError::Api {
+            status: 500,
+            message: "Internal Server Error".into(),
+        };
         assert_eq!(exit_code_for_error(&err), exit_codes::API_ERROR);
     }
 

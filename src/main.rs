@@ -1,4 +1,4 @@
-use jira_cli::api::JiraClient;
+use jira_cli::api::{ApiError, JiraClient};
 use jira_cli::commands;
 use jira_cli::config::Config;
 use jira_cli::output::{OutputConfig, exit_code_for_error};
@@ -64,6 +64,9 @@ enum Command {
     #[command(subcommand)]
     Config(ConfigCommand),
 
+    /// Bootstrap config and API token setup (alias for `config init`)
+    Init,
+
     /// Dump all commands and arguments as JSON for agent introspection
     Schema,
 
@@ -71,7 +74,7 @@ enum Command {
     Completions {
         /// Shell to generate completions for
         shell: Shell,
-        /// Install completions to the standard location for your shell
+        /// Install completions for supported shells (bash, zsh, fish)
         #[arg(long)]
         install: bool,
     },
@@ -246,17 +249,22 @@ async fn run(cli: Cli, out: OutputConfig) -> Result<(), Box<dyn std::error::Erro
         }
 
         Command::Completions { shell, install } => {
-            handle_completions(shell, install);
+            handle_completions(shell, install, &out)?;
+            return Ok(());
+        }
+
+        Command::Init => {
+            jira_cli::config::init(&out);
             return Ok(());
         }
 
         Command::Config(cmd) => {
             match cmd {
                 ConfigCommand::Show => {
-                    jira_cli::config::show(cli.host, cli.email, cli.profile);
+                    jira_cli::config::show(&out, cli.host, cli.email, cli.profile)?;
                 }
                 ConfigCommand::Init => {
-                    jira_cli::config::init();
+                    jira_cli::config::init(&out);
                 }
             }
             return Ok(());
@@ -270,21 +278,46 @@ async fn run(cli: Cli, out: OutputConfig) -> Result<(), Box<dyn std::error::Erro
 
     match cli.command {
         Command::Issues(cmd) => match cmd {
-            IssuesCommand::List { project, status, assignee, sprint, jql, limit, offset } => {
+            IssuesCommand::List {
+                project,
+                status,
+                assignee,
+                sprint,
+                jql,
+                limit,
+                offset,
+            } => {
                 commands::issues::list(
-                    &client, &out,
-                    project.as_deref(), status.as_deref(),
-                    assignee.as_deref(), sprint.as_deref(),
-                    jql.as_deref(), limit, offset,
+                    &client,
+                    &out,
+                    project.as_deref(),
+                    status.as_deref(),
+                    assignee.as_deref(),
+                    sprint.as_deref(),
+                    jql.as_deref(),
+                    limit,
+                    offset,
                 )
                 .await?
             }
             IssuesCommand::Show { key, open } => {
                 commands::issues::show(&client, &out, &key, open).await?
             }
-            IssuesCommand::Create { project, issue_type, summary, description, priority, labels, assignee } => {
+            IssuesCommand::Create {
+                project,
+                issue_type,
+                summary,
+                description,
+                priority,
+                labels,
+                assignee,
+            } => {
                 let label_refs: Vec<&str> = labels.iter().map(String::as_str).collect();
-                let labels_opt = if label_refs.is_empty() { None } else { Some(label_refs.as_slice()) };
+                let labels_opt = if label_refs.is_empty() {
+                    None
+                } else {
+                    Some(label_refs.as_slice())
+                };
                 let assignee_str = match assignee.as_deref() {
                     Some("me") => {
                         let me = client.get_myself().await?;
@@ -294,7 +327,11 @@ async fn run(cli: Cli, out: OutputConfig) -> Result<(), Box<dyn std::error::Erro
                     None => None,
                 };
                 commands::issues::create(
-                    &client, &out, &project, &issue_type, &summary,
+                    &client,
+                    &out,
+                    &project,
+                    &issue_type,
+                    &summary,
                     description.as_deref(),
                     priority.as_deref(),
                     labels_opt,
@@ -302,10 +339,19 @@ async fn run(cli: Cli, out: OutputConfig) -> Result<(), Box<dyn std::error::Erro
                 )
                 .await?
             }
-            IssuesCommand::Update { key, summary, description, priority } => {
+            IssuesCommand::Update {
+                key,
+                summary,
+                description,
+                priority,
+            } => {
                 commands::issues::update(
-                    &client, &out, &key,
-                    summary.as_deref(), description.as_deref(), priority.as_deref(),
+                    &client,
+                    &out,
+                    &key,
+                    summary.as_deref(),
+                    description.as_deref(),
+                    priority.as_deref(),
                 )
                 .await?
             }
@@ -335,25 +381,56 @@ async fn run(cli: Cli, out: OutputConfig) -> Result<(), Box<dyn std::error::Erro
         Command::Myself => commands::myself::show(&client, &out).await?,
 
         // Already handled above
-        Command::Schema | Command::Completions { .. } | Command::Config(_) => {}
+        Command::Schema | Command::Completions { .. } | Command::Config(_) | Command::Init => {}
     }
 
     Ok(())
 }
 
 fn print_schema() {
-    let schema = serde_json::json!({
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&schema_json()).expect("failed to serialize schema")
+    );
+}
+
+fn schema_json() -> serde_json::Value {
+    let config_path = jira_cli::config::schema_config_path();
+    let config_path_description = jira_cli::config::schema_config_path_description();
+    let permission_advice = jira_cli::config::schema_recommended_permissions_example();
+    serde_json::json!({
         "name": "jira",
         "version": env!("CARGO_PKG_VERSION"),
         "description": "CLI for Jira — optimized for humans and agents",
         "auth": {
-            "note": "Set JIRA_HOST, JIRA_EMAIL, JIRA_TOKEN or use ~/.config/jira/config.toml",
-            "token_instructions": "https://id.atlassian.com/manage-profile/security/api-tokens"
+            "note": format!(
+                "Provide host and email via CLI flags, environment variables, or the config file at {config_path}. Provide the API token via JIRA_TOKEN or that config file."
+            ),
+            "token_instructions": "https://id.atlassian.com/manage-profile/security/api-tokens",
+            "required_fields": ["host", "email", "token"],
+            "config_file": {
+                "path": config_path,
+                "description": config_path_description,
+                "profile_selector": {
+                    "flag": "--profile",
+                    "env": "JIRA_PROFILE"
+                }
+            },
+            "resolution_order": {
+                "host": ["--host", "JIRA_HOST", "config profile/default host"],
+                "email": ["--email", "JIRA_EMAIL", "config profile/default email"],
+                "token": ["JIRA_TOKEN", "config profile/default token"]
+            },
+            "env": [
+                { "name": "JIRA_HOST", "description": "Atlassian domain override", "required": false },
+                { "name": "JIRA_EMAIL", "description": "Account email override", "required": false },
+                { "name": "JIRA_TOKEN", "description": "API token override (env/config only)", "required": false },
+                { "name": "JIRA_PROFILE", "description": "Config profile", "required": false }
+            ]
         },
         "global_flags": [
             { "name": "--host", "env": "JIRA_HOST", "description": "Atlassian domain", "required": false },
             { "name": "--email", "env": "JIRA_EMAIL", "description": "Account email", "required": false },
-            { "name": "--token", "env": "JIRA_TOKEN", "description": "API token (env/config only, no CLI flag)", "required": true },
             { "name": "--profile", "env": "JIRA_PROFILE", "description": "Config profile", "required": false },
             { "name": "--json", "description": "Force JSON output (auto when stdout is not a TTY)", "required": false },
             { "name": "--quiet", "description": "Suppress non-data output", "required": false },
@@ -474,11 +551,42 @@ fn print_schema() {
             },
             {
                 "name": "config show",
-                "description": "Show resolved config (token masked)"
+                "description": "Show resolved config (token masked)",
+                "json_shape": {
+                    "configPath": "/path/to/config.toml",
+                    "host": "example.atlassian.net",
+                    "email": "me@example.com",
+                    "tokenMasked": "***abcd"
+                }
             },
             {
                 "name": "config init",
-                "description": "Print example config file and API token instructions"
+                "description": "Print or emit example config file and API token instructions",
+                "json_shape": {
+                    "configPath": "/path/to/config.toml",
+                    "pathResolution": config_path_description,
+                    "tokenInstructions": "https://id.atlassian.com/manage-profile/security/api-tokens",
+                    "recommendedPermissions": permission_advice,
+                    "example": {
+                        "default": { "host": "...", "email": "...", "token": "..." },
+                        "profiles": { "work": { "host": "...", "email": "...", "token": "..." } }
+                    }
+                }
+            },
+            {
+                "name": "init",
+                "description": "Alias for `config init`",
+                "alias_for": "config init",
+                "json_shape": {
+                    "configPath": "/path/to/config.toml",
+                    "pathResolution": config_path_description,
+                    "tokenInstructions": "https://id.atlassian.com/manage-profile/security/api-tokens",
+                    "recommendedPermissions": permission_advice,
+                    "example": {
+                        "default": { "host": "...", "email": "...", "token": "..." },
+                        "profiles": { "work": { "host": "...", "email": "...", "token": "..." } }
+                    }
+                }
             },
             {
                 "name": "schema",
@@ -487,20 +595,20 @@ fn print_schema() {
             {
                 "name": "completions <shell>",
                 "description": "Generate shell completions",
-                "args": [{ "name": "shell", "description": "bash, zsh, fish, or powershell", "required": true }],
+                "args": [{ "name": "shell", "description": "bash, zsh, fish, powershell, or elvish", "required": true }],
                 "flags": [
-                    { "name": "--install", "description": "Install completions to standard location (bash and zsh only)", "required": false }
+                    { "name": "--install", "description": "Install completions for supported shells (bash, zsh, fish). PowerShell and elvish must be redirected manually.", "required": false }
                 ]
             },
         ]
-    });
-    println!(
-        "{}",
-        serde_json::to_string_pretty(&schema).expect("failed to serialize schema")
-    );
+    })
 }
 
-fn handle_completions(shell: Shell, install: bool) {
+fn handle_completions(
+    shell: Shell,
+    install: bool,
+    out: &OutputConfig,
+) -> Result<(), Box<dyn std::error::Error>> {
     use clap_complete::generate;
     use std::io;
 
@@ -508,51 +616,173 @@ fn handle_completions(shell: Shell, install: bool) {
     let bin_name = cmd.get_name().to_string();
 
     if install {
-        let (path, mut writer) = match shell {
+        let (path, mut writer, note) = match shell {
             Shell::Bash => {
-                let Some(p) = dirs::home_dir().map(|h| h.join(".bash_completion.d").join("jira")) else {
-                    eprintln!("Error: cannot determine home directory");
-                    std::process::exit(1);
-                };
-                if let Err(e) = std::fs::create_dir_all(p.parent().unwrap_or(p.as_path())) {
-                    eprintln!("Error: cannot create {}: {e}", p.parent().unwrap_or(p.as_path()).display());
-                    std::process::exit(1);
-                }
-                let f = match std::fs::File::create(&p) {
-                    Ok(f) => f,
-                    Err(e) => {
-                        eprintln!("Error: cannot write {}: {e}", p.display());
-                        std::process::exit(1);
-                    }
-                };
-                (p, Box::new(f) as Box<dyn io::Write>)
+                let p = bash_completion_path()?;
+                let writer = create_completion_writer(&p)?;
+                let note = format!(
+                    "Generated completion file at {}. Source it from your shell startup if ~/.bash_completion.d is not loaded automatically.",
+                    p.display()
+                );
+                (p, writer, note)
             }
             Shell::Zsh => {
-                let Some(p) = dirs::home_dir().map(|h| h.join(".zsh").join("completions").join("_jira")) else {
-                    eprintln!("Error: cannot determine home directory");
-                    std::process::exit(1);
-                };
-                if let Err(e) = std::fs::create_dir_all(p.parent().unwrap_or(p.as_path())) {
-                    eprintln!("Error: cannot create {}: {e}", p.parent().unwrap_or(p.as_path()).display());
-                    std::process::exit(1);
-                }
-                let f = match std::fs::File::create(&p) {
-                    Ok(f) => f,
-                    Err(e) => {
-                        eprintln!("Error: cannot write {}: {e}", p.display());
-                        std::process::exit(1);
-                    }
-                };
-                (p, Box::new(f) as Box<dyn io::Write>)
+                let p = zsh_completion_path()?;
+                let writer = create_completion_writer(&p)?;
+                let note = format!(
+                    "Generated completion file at {}. Ensure its parent directory is in `fpath`, then run `autoload -Uz compinit && compinit`.",
+                    p.display()
+                );
+                (p, writer, note)
+            }
+            Shell::Fish => {
+                let p = fish_completion_path()?;
+                let writer = create_completion_writer(&p)?;
+                let note = format!(
+                    "Generated completion file at {}. Fish loads this path automatically.",
+                    p.display()
+                );
+                (p, writer, note)
+            }
+            Shell::PowerShell => {
+                return Err(ApiError::InvalidInput(
+                    "`jira completions powershell --install` is not supported. Redirect `jira completions powershell` into your PowerShell profile or completion path manually.".into(),
+                )
+                .into());
             }
             _ => {
-                generate(shell, &mut cmd, bin_name, &mut io::stdout());
-                return;
+                let shell_name = shell.to_string();
+                return Err(ApiError::InvalidInput(format!(
+                    "`jira completions {shell_name} --install` is not supported. Redirect `jira completions {shell_name}` into your shell completion path manually."
+                ))
+                .into());
             }
         };
         generate(shell, &mut cmd, bin_name, &mut writer);
-        eprintln!("Completions installed to {}", path.display());
+        out.print_message(&note);
+        out.print_message(&format!("Completion file path: {}", path.display()));
     } else {
         generate(shell, &mut cmd, bin_name, &mut io::stdout());
+    }
+    Ok(())
+}
+
+fn create_completion_writer(path: &std::path::Path) -> Result<Box<dyn std::io::Write>, ApiError> {
+    let parent = path.parent().unwrap_or(path);
+    std::fs::create_dir_all(parent)
+        .map_err(|e| ApiError::Other(format!("cannot create {}: {e}", parent.display())))?;
+    let file = std::fs::File::create(path)
+        .map_err(|e| ApiError::Other(format!("cannot write {}: {e}", path.display())))?;
+    Ok(Box::new(file) as Box<dyn std::io::Write>)
+}
+
+fn home_dir() -> Result<std::path::PathBuf, ApiError> {
+    dirs::home_dir().ok_or_else(|| ApiError::Other("cannot determine home directory".into()))
+}
+
+fn bash_completion_path() -> Result<std::path::PathBuf, ApiError> {
+    Ok(home_dir()?.join(".bash_completion.d").join("jira"))
+}
+
+fn zsh_completion_path() -> Result<std::path::PathBuf, ApiError> {
+    Ok(home_dir()?.join(".zsh").join("completions").join("_jira"))
+}
+
+fn fish_completion_path() -> Result<std::path::PathBuf, ApiError> {
+    #[cfg(target_os = "windows")]
+    let base = dirs::config_dir().ok_or_else(|| {
+        ApiError::Other("cannot determine config directory for fish completions".into())
+    })?;
+
+    #[cfg(not(target_os = "windows"))]
+    let base = std::env::var_os("XDG_CONFIG_HOME")
+        .filter(|value| !value.is_empty())
+        .map(std::path::PathBuf::from)
+        .unwrap_or(home_dir()?.join(".config"));
+
+    Ok(base.join("fish").join("completions").join("jira.fish"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use jira_cli::api::ApiError;
+    use jira_cli::test_support::{EnvVarGuard, ProcessEnvLock, set_config_dir_env};
+    use tempfile::TempDir;
+
+    #[test]
+    fn schema_does_not_advertise_nonexistent_token_flag() {
+        let schema = schema_json();
+        let global_flags = schema["global_flags"].as_array().unwrap();
+        assert!(
+            !global_flags.iter().any(|flag| flag["name"] == "--token"),
+            "schema must not invent a --token CLI flag"
+        );
+
+        let auth_env = schema["auth"]["env"].as_array().unwrap();
+        assert!(
+            auth_env.iter().any(|entry| entry["name"] == "JIRA_TOKEN"),
+            "schema must still document JIRA_TOKEN as an auth source"
+        );
+    }
+
+    #[test]
+    fn schema_auth_describes_runtime_config_path_and_effective_requirements() {
+        let schema = schema_json();
+        let auth = &schema["auth"];
+
+        assert_eq!(
+            auth["config_file"]["path"].as_str(),
+            Some(jira_cli::config::schema_config_path().as_str())
+        );
+        assert_eq!(
+            auth["config_file"]["description"].as_str(),
+            Some(jira_cli::config::schema_config_path_description())
+        );
+        assert_eq!(
+            auth["required_fields"],
+            serde_json::json!(["host", "email", "token"])
+        );
+
+        let auth_env = auth["env"].as_array().unwrap();
+        assert!(
+            auth_env.iter().all(|entry| entry["required"] == false),
+            "individual env vars are optional auth sources, not mandatory on their own"
+        );
+    }
+
+    #[test]
+    fn schema_config_init_uses_platform_specific_bootstrap_guidance() {
+        let schema = schema_json();
+        let config_init = schema["commands"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|command| command["name"] == "config init")
+            .unwrap();
+
+        assert_eq!(
+            config_init["json_shape"]["pathResolution"].as_str(),
+            Some(jira_cli::config::schema_config_path_description())
+        );
+        assert_eq!(
+            config_init["json_shape"]["recommendedPermissions"].as_str(),
+            Some(jira_cli::config::schema_recommended_permissions_example())
+        );
+    }
+
+    #[test]
+    fn config_show_propagates_invalid_config_as_error() {
+        let _env = ProcessEnvLock::acquire().unwrap();
+        let dir = TempDir::new().unwrap();
+        let _config_dir = set_config_dir_env(dir.path());
+        let _host = EnvVarGuard::unset("JIRA_HOST");
+        let _email = EnvVarGuard::unset("JIRA_EMAIL");
+        let _token = EnvVarGuard::unset("JIRA_TOKEN");
+        let _profile = EnvVarGuard::unset("JIRA_PROFILE");
+
+        let err =
+            jira_cli::config::show(&OutputConfig::new(true, true), None, None, None).unwrap_err();
+        assert!(matches!(err, ApiError::InvalidInput(_)));
     }
 }
