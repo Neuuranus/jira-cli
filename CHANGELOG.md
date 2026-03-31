@@ -9,6 +9,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 
 
+
+## [0.3.3](https://github.com/rvben/jira-cli/compare/v0.3.2...v0.3.3) - 2026-03-31
+
+### Fixed
+
+- **config**: show token in plain text during init ([fd62572](https://github.com/rvben/jira-cli/commit/fd6257201119664fa280e0d3b8d30983450cac23))
+
 ## [0.3.2](https://github.com/rvben/jira-cli/compare/v0.3.1...v0.3.2) - 2026-03-31
 
 ### Added
