@@ -8,6 +8,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 
 
+
+## [0.3.2](https://github.com/rvben/jira-cli/compare/v0.3.1...v0.3.2) - 2026-03-31
+
+### Added
+
+- **config**: interactive init wizard and profile removal ([1db53db](https://github.com/rvben/jira-cli/commit/1db53dbaf75c65d0d0ae3fcde9de6e3b878ed8a8))
+
 ## [0.3.1](https://github.com/rvben/jira-cli/compare/v0.3.0...v0.3.1) - 2026-03-30
 
 ### Fixed
