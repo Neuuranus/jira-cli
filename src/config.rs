@@ -423,22 +423,17 @@ async fn init_interactive(prefill_host: Option<&str>) -> Result<(), Box<dyn std:
     };
 
     // Credentials
-    let keep_hint = sym_dim("  (Enter to keep)");
     let (email, token, auth_type, api_version): (Option<String>, String, &str, u8) = if is_cloud {
         const CLOUD_URL: &str = "https://id.atlassian.com/manage-profile/security/api-tokens";
         let default_email = existing.as_ref().and_then(|p| p.email.clone());
         let email = prompt_required("Email", "", default_email.as_deref())?;
         eprintln!("  {}", sym_dim(&format!("→ {CLOUD_URL}")));
-        let token_prompt = format!(
-            "{} Token{}: ",
-            sym_q(),
-            if existing.is_some() {
-                keep_hint.as_str()
-            } else {
-                ""
-            }
-        );
-        let raw = rpassword::prompt_password(token_prompt)?;
+        let token_hint = if existing.as_ref().and_then(|p| p.token.as_ref()).is_some() {
+            "(Enter to keep)"
+        } else {
+            ""
+        };
+        let raw = prompt("Token", token_hint, None)?;
         let token = if raw.trim().is_empty() {
             existing
                 .as_ref()
@@ -451,16 +446,12 @@ async fn init_interactive(prefill_host: Option<&str>) -> Result<(), Box<dyn std:
     } else {
         let pat_url = dc_pat_url(Some(&host));
         eprintln!("  {}", sym_dim(&format!("→ {pat_url}")));
-        let token_prompt = format!(
-            "{} Token{}: ",
-            sym_q(),
-            if existing.is_some() {
-                keep_hint.as_str()
-            } else {
-                ""
-            }
-        );
-        let raw = rpassword::prompt_password(token_prompt)?;
+        let token_hint = if existing.as_ref().and_then(|p| p.token.as_ref()).is_some() {
+            "(Enter to keep)"
+        } else {
+            ""
+        };
+        let raw = prompt("Token", token_hint, None)?;
         let token = if raw.trim().is_empty() {
             existing
                 .as_ref()
