@@ -402,6 +402,11 @@ enum ConfigCommand {
     Show,
     /// Print example config file and token instructions
     Init,
+    /// Remove a profile from the config file
+    Remove {
+        /// Profile name to remove (use "default" for the default profile)
+        profile: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -469,7 +474,7 @@ async fn run(cli: Cli, out: OutputConfig) -> Result<(), Box<dyn std::error::Erro
         }
 
         Command::Init => {
-            jira_cli::config::init(&out, cli.host.as_deref());
+            jira_cli::config::init(&out, cli.host.as_deref()).await;
             return Ok(());
         }
 
@@ -479,7 +484,10 @@ async fn run(cli: Cli, out: OutputConfig) -> Result<(), Box<dyn std::error::Erro
                     jira_cli::config::show(&out, cli.host, cli.email, cli.profile)?;
                 }
                 ConfigCommand::Init => {
-                    jira_cli::config::init(&out, cli.host.as_deref());
+                    jira_cli::config::init(&out, cli.host.as_deref()).await;
+                }
+                ConfigCommand::Remove { profile } => {
+                    jira_cli::config::remove_profile(&profile);
                 }
             }
             return Ok(());

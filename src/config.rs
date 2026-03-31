@@ -260,12 +260,34 @@ pub fn show(
     Ok(())
 }
 
-/// Print example config file and instructions for obtaining an API token.
+/// Interactively set up the config file, or print JSON instructions when `--json` is used.
 ///
-/// Pass `host` (e.g. `"jira.mycompany.com"`) to include a one-click URL to the
-/// Personal Access Token creation page on a Jira DC/Server instance. When omitted
-/// the URL is shown as a template placeholder.
-pub fn init(out: &OutputConfig, host: Option<&str>) {
+/// In JSON mode the function prints a machine-readable instructions object and returns.
+/// In an interactive terminal it prompts for Jira type, host, credentials, and profile
+/// name, verifies the credentials against the API, then writes (or updates)
+/// `~/.config/jira/config.toml`.
+pub async fn init(out: &OutputConfig, host: Option<&str>) {
+    if out.json {
+        init_json(out, host);
+        return;
+    }
+
+    use std::io::IsTerminal;
+    if !std::io::stdin().is_terminal() {
+        out.print_message(
+            "Run `jira init` in an interactive terminal to configure credentials, \
+             or use `jira init --json` for setup instructions.",
+        );
+        return;
+    }
+
+    if let Err(e) = init_interactive(host).await {
+        eprintln!("{} {e}", sym_fail());
+        std::process::exit(crate::output::exit_codes::GENERAL_ERROR);
+    }
+}
+
+fn init_json(out: &OutputConfig, host: Option<&str>) {
     let path = config_path();
     let path_resolution = schema_config_path_description();
     let permission_advice = recommended_permissions(&path);
@@ -293,64 +315,476 @@ pub fn init(out: &OutputConfig, host: Option<&str>) {
     });
 
     const CLOUD_TOKEN_URL: &str = "https://id.atlassian.com/manage-profile/security/api-tokens";
-
     let pat_url = dc_pat_url(host);
-    let config_status = if path.exists() {
-        "exists — run `jira config show` to see current values"
+
+    out.print_data(
+        &serde_json::to_string_pretty(&serde_json::json!({
+            "configPath": path,
+            "pathResolution": path_resolution,
+            "configExists": path.exists(),
+            "tokenInstructions": CLOUD_TOKEN_URL,
+            "dcPatInstructions": pat_url,
+            "recommendedPermissions": permission_advice,
+            "example": example,
+        }))
+        .expect("failed to serialize JSON"),
+    );
+}
+
+async fn init_interactive(prefill_host: Option<&str>) -> Result<(), Box<dyn std::error::Error>> {
+    let sep = sym_dim("──────────────");
+    eprintln!("Jira CLI Setup");
+    eprintln!("{sep}");
+
+    let path = config_path();
+
+    // Decide what to do: first run, update an existing profile, or add a new one.
+    //
+    // `target_name` holds the profile name to write:
+    //   Some(name) — already known (first run → "default"; update → chosen name)
+    //   None       — "add new" path, ask for name after credentials
+    let (target_name, existing): (Option<String>, Option<ProfileConfig>) = if path.exists() {
+        let profiles = list_profile_names(&path)?;
+
+        // Show the config path and each profile with its host so the user knows
+        // what exists before deciding whether to update or add.
+        eprintln!();
+        eprintln!(
+            "  {} {}",
+            sym_dim("Config:"),
+            sym_dim(&path.display().to_string())
+        );
+        eprintln!();
+        eprintln!("  {}:", sym_dim("Profiles"));
+        for name in &profiles {
+            let host = read_raw_profile(&path, name)
+                .ok()
+                .and_then(|p| p.host)
+                .unwrap_or_default();
+            eprintln!("    {} {}  {}", sym_dim("•"), name, sym_dim(&host));
+        }
+        eprintln!();
+
+        let action = prompt("Action", "[update/add]", Some("update"))?;
+        eprintln!();
+
+        if !action.trim().eq_ignore_ascii_case("add") {
+            let default = profiles.first().map(String::as_str).unwrap_or("default");
+            let raw = if profiles.len() > 1 {
+                prompt("Profile", "", Some(default))?
+            } else {
+                default.to_owned()
+            };
+            let name = if raw.trim().is_empty() {
+                default.to_owned()
+            } else {
+                raw.trim().to_owned()
+            };
+            let cfg = read_raw_profile(&path, &name)?;
+            if profiles.len() > 1 {
+                eprintln!();
+            }
+            (Some(name), Some(cfg))
+        } else {
+            (None, None)
+        }
     } else {
-        "not found — create it"
+        // First run: silently use "default", no need to ask.
+        eprintln!();
+        (Some("default".to_owned()), None)
     };
 
-    if out.json {
-        out.print_data(
-            &serde_json::to_string_pretty(&serde_json::json!({
-                "configPath": path,
-                "pathResolution": path_resolution,
-                "configExists": path.exists(),
-                "tokenInstructions": CLOUD_TOKEN_URL,
-                "dcPatInstructions": pat_url,
-                "recommendedPermissions": permission_advice,
-                "example": example,
-            }))
-            .expect("failed to serialize JSON"),
+    // Instance type — derive from existing config, or ask.
+    let is_cloud = if let Some(ref p) = existing {
+        p.auth_type.as_deref() != Some("pat")
+    } else {
+        let t = prompt("Type", sym_dim("[cloud/dc]").as_str(), Some("cloud"))?;
+        eprintln!();
+        !t.trim().eq_ignore_ascii_case("dc")
+    };
+
+    // Host
+    let host = if is_cloud {
+        let default_sub = existing
+            .as_ref()
+            .and_then(|p| p.host.clone())
+            .as_deref()
+            .or(prefill_host)
+            .map(|h| h.trim_end_matches(".atlassian.net").to_owned());
+        let raw = prompt_required("Subdomain", "", default_sub.as_deref())?;
+        let sub = raw.trim().trim_end_matches(".atlassian.net");
+        format!("{sub}.atlassian.net")
+    } else {
+        let default = existing
+            .as_ref()
+            .and_then(|p| p.host.clone())
+            .or_else(|| prefill_host.map(str::to_owned));
+        prompt_required("Host", "", default.as_deref())?
+    };
+
+    // Credentials
+    let keep_hint = sym_dim("  (Enter to keep)");
+    let (email, token, auth_type, api_version): (Option<String>, String, &str, u8) = if is_cloud {
+        const CLOUD_URL: &str = "https://id.atlassian.com/manage-profile/security/api-tokens";
+        let default_email = existing.as_ref().and_then(|p| p.email.clone());
+        let email = prompt_required("Email", "", default_email.as_deref())?;
+        eprintln!("  {}", sym_dim(&format!("→ {CLOUD_URL}")));
+        let token_prompt = format!(
+            "{} Token{}: ",
+            sym_q(),
+            if existing.is_some() {
+                keep_hint.as_str()
+            } else {
+                ""
+            }
         );
-        return;
+        let raw = rpassword::prompt_password(token_prompt)?;
+        let token = if raw.trim().is_empty() {
+            existing
+                .as_ref()
+                .and_then(|p| p.token.clone())
+                .ok_or("No existing token — please enter a token.")?
+        } else {
+            raw
+        };
+        (Some(email), token, "basic", 3)
+    } else {
+        let pat_url = dc_pat_url(Some(&host));
+        eprintln!("  {}", sym_dim(&format!("→ {pat_url}")));
+        let token_prompt = format!(
+            "{} Token{}: ",
+            sym_q(),
+            if existing.is_some() {
+                keep_hint.as_str()
+            } else {
+                ""
+            }
+        );
+        let raw = rpassword::prompt_password(token_prompt)?;
+        let token = if raw.trim().is_empty() {
+            existing
+                .as_ref()
+                .and_then(|p| p.token.clone())
+                .ok_or("No existing token — please enter a token.")?
+        } else {
+            raw
+        };
+        let default_ver = existing
+            .as_ref()
+            .and_then(|p| p.api_version.map(|v| v.to_string()))
+            .unwrap_or_else(|| "2".to_owned());
+        let ver_str = prompt("API version", "", Some(&default_ver))?;
+        let api_version: u8 = ver_str.trim().parse().unwrap_or(2);
+        (None, token, "pat", api_version)
+    };
+
+    // Verify credentials against the API before writing anything.
+    use std::io::Write;
+    eprintln!();
+    eprint!("  Verifying credentials...");
+    std::io::stderr().flush().ok();
+
+    let auth_type_enum = if auth_type == "pat" {
+        AuthType::Pat
+    } else {
+        AuthType::Basic
+    };
+
+    let verified = match crate::api::client::JiraClient::new(
+        &host,
+        email.as_deref().unwrap_or(""),
+        &token,
+        auth_type_enum,
+        api_version,
+    ) {
+        Err(e) => {
+            eprintln!(" {} {e}", sym_fail());
+            return Err(e.into());
+        }
+        Ok(client) => match client.get_myself().await {
+            Ok(myself) => {
+                eprintln!(" {} Authenticated as {}", sym_ok(), myself.display_name);
+                true
+            }
+            Err(e) => {
+                eprintln!(" {} {e}", sym_fail());
+                eprintln!();
+                let save = prompt("Save config anyway?", sym_dim("[y/N]").as_str(), Some("n"))?;
+                save.trim().eq_ignore_ascii_case("y")
+            }
+        },
+    };
+
+    if !verified {
+        eprintln!();
+        eprintln!("{sep}");
+        return Ok(());
     }
 
-    let cloud_link = crate::output::hyperlink(CLOUD_TOKEN_URL);
-    let pat_link = crate::output::hyperlink(&pat_url);
+    // Profile name — ask only when adding a new named profile.
+    let profile_name = match target_name {
+        Some(name) => name,
+        None => {
+            eprintln!();
+            let raw = prompt_required("Profile name", "", Some("default"))?;
+            if raw.trim().is_empty() {
+                "default".to_owned()
+            } else {
+                raw.trim().to_owned()
+            }
+        }
+    };
 
-    out.print_data(&format!(
-        "\
-Config file: {path_display} ({config_status})
+    // Write config
+    write_profile_to_config(
+        &path,
+        &profile_name,
+        &host,
+        email.as_deref(),
+        &token,
+        auth_type,
+        api_version,
+    )?;
 
-── Jira Cloud ────────────────────────────────────────────────────────────────
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
+    }
 
-[default]
-host  = \"mycompany.atlassian.net\"
-email = \"me@example.com\"
-token = \"your-api-token\"
+    eprintln!();
+    eprintln!("  {} Config written to {}", sym_ok(), path.display());
+    eprintln!("{sep}");
+    if profile_name == "default" {
+        eprintln!("  Run: jira projects list");
+    } else {
+        eprintln!("  Run: jira --profile {profile_name} projects list");
+    }
+    eprintln!();
 
-  {cloud_link}
+    Ok(())
+}
 
-── Jira Data Center / Server ─────────────────────────────────────────────────
+/// List all profile names present in the config file (default first, then named profiles).
+fn list_profile_names(path: &std::path::Path) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+    let content = std::fs::read_to_string(path)?;
+    let doc: toml::Value = toml::from_str(&content)?;
+    let table = doc.as_table().ok_or("config is not a TOML table")?;
 
-[profiles.dc]
-host        = \"jira.mycompany.com\"
-token       = \"your-personal-access-token\"
-auth_type   = \"pat\"
-api_version = 2
+    let mut names = Vec::new();
+    if table.contains_key("default") {
+        names.push("default".to_owned());
+    }
+    if let Some(profiles) = table.get("profiles").and_then(toml::Value::as_table) {
+        for name in profiles.keys() {
+            names.push(name.clone());
+        }
+    }
+    Ok(names)
+}
 
-  {pat_link}
+/// Read a single profile's raw values from the config file for use as pre-fill defaults.
+fn read_raw_profile(
+    path: &std::path::Path,
+    name: &str,
+) -> Result<ProfileConfig, Box<dyn std::error::Error>> {
+    let content = std::fs::read_to_string(path)?;
+    let raw: RawConfig = toml::from_str(&content)?;
+    if name == "default" {
+        Ok(raw.default_profile())
+    } else {
+        Ok(raw.profiles.get(name).cloned().unwrap_or_default())
+    }
+}
 
-Use --profile dc to switch:  jira --profile dc <command>
-                         or: JIRA_PROFILE=dc jira <command>
+/// Print `? Label  hint [default]: ` and read a line from stdin.
+///
+/// `hint` is shown dimmed between the label and the default bracket; pass `""` to omit it.
+/// Returns the default string when the user presses Enter without typing.
+fn prompt(label: &str, hint: &str, default: Option<&str>) -> Result<String, std::io::Error> {
+    use std::io::{self, Write};
+    let hint_part = if hint.is_empty() {
+        String::new()
+    } else {
+        format!("  {hint}")
+    };
+    let default_part = match default {
+        Some(d) if !d.is_empty() => format!(" [{d}]"),
+        _ => String::new(),
+    };
+    eprint!("{} {label}{hint_part}{default_part}: ", sym_q());
+    io::stderr().flush()?;
+    let mut buf = String::new();
+    io::stdin().read_line(&mut buf)?;
+    let trimmed = buf.trim().to_owned();
+    if trimmed.is_empty() {
+        Ok(default.unwrap_or("").to_owned())
+    } else {
+        Ok(trimmed)
+    }
+}
 
-── Security ──────────────────────────────────────────────────────────────────
+/// Like `prompt` but re-prompts until the user provides a non-empty value.
+fn prompt_required(
+    label: &str,
+    hint: &str,
+    default: Option<&str>,
+) -> Result<String, std::io::Error> {
+    loop {
+        let value = prompt(label, hint, default)?;
+        if !value.trim().is_empty() {
+            return Ok(value);
+        }
+        eprintln!("  {} {label} is required.", sym_fail());
+    }
+}
 
-{permission_advice}",
-        path_display = path.display(),
-    ));
+// ── Color / symbol helpers ──────────────────────────────────────────────────
+
+fn sym_q() -> String {
+    if crate::output::use_color() {
+        use owo_colors::OwoColorize;
+        "?".green().bold().to_string()
+    } else {
+        "?".to_owned()
+    }
+}
+
+fn sym_ok() -> String {
+    if crate::output::use_color() {
+        use owo_colors::OwoColorize;
+        "✔".green().to_string()
+    } else {
+        "✔".to_owned()
+    }
+}
+
+fn sym_fail() -> String {
+    if crate::output::use_color() {
+        use owo_colors::OwoColorize;
+        "✖".red().to_string()
+    } else {
+        "✖".to_owned()
+    }
+}
+
+fn sym_dim(s: &str) -> String {
+    if crate::output::use_color() {
+        use owo_colors::OwoColorize;
+        s.dimmed().to_string()
+    } else {
+        s.to_owned()
+    }
+}
+
+/// Write or update a single profile section in the config file.
+///
+/// If the file already exists its other sections are preserved; only the target
+/// profile section is created or replaced. The parent directory is created if needed.
+fn write_profile_to_config(
+    path: &std::path::Path,
+    profile_name: &str,
+    host: &str,
+    email: Option<&str>,
+    token: &str,
+    auth_type: &str,
+    api_version: u8,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let existing = if path.exists() {
+        std::fs::read_to_string(path)?
+    } else {
+        String::new()
+    };
+
+    let mut doc: toml::Value = if existing.trim().is_empty() {
+        toml::Value::Table(toml::map::Map::new())
+    } else {
+        toml::from_str(&existing)?
+    };
+
+    let root = doc.as_table_mut().expect("config is a TOML table");
+
+    let mut section = toml::map::Map::new();
+    section.insert("host".to_owned(), toml::Value::String(host.to_owned()));
+    if let Some(e) = email {
+        section.insert("email".to_owned(), toml::Value::String(e.to_owned()));
+    }
+    section.insert("token".to_owned(), toml::Value::String(token.to_owned()));
+    if auth_type != "basic" {
+        section.insert(
+            "auth_type".to_owned(),
+            toml::Value::String(auth_type.to_owned()),
+        );
+        section.insert(
+            "api_version".to_owned(),
+            toml::Value::Integer(i64::from(api_version)),
+        );
+    }
+
+    if profile_name == "default" {
+        root.insert("default".to_owned(), toml::Value::Table(section));
+    } else {
+        let profiles = root
+            .entry("profiles")
+            .or_insert_with(|| toml::Value::Table(toml::map::Map::new()));
+        profiles
+            .as_table_mut()
+            .expect("profiles is a TOML table")
+            .insert(profile_name.to_owned(), toml::Value::Table(section));
+    }
+
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(path, toml::to_string_pretty(&doc)?)?;
+
+    Ok(())
+}
+
+/// Remove a named profile from the config file.
+///
+/// The "default" profile is removed by deleting the `[default]` section. Named profiles
+/// are removed from the `[profiles]` table. Prints a success or error message; does not
+/// write to stdout so it is safe in JSON mode.
+pub fn remove_profile(profile_name: &str) {
+    let path = config_path();
+
+    if !path.exists() {
+        eprintln!("No config file found at {}", path.display());
+        std::process::exit(crate::output::exit_codes::GENERAL_ERROR);
+    }
+
+    let result = (|| -> Result<(), Box<dyn std::error::Error>> {
+        let content = std::fs::read_to_string(&path)?;
+        let mut doc: toml::Value = toml::from_str(&content)?;
+        let root = doc.as_table_mut().ok_or("config is not a TOML table")?;
+
+        let removed = if profile_name == "default" {
+            root.remove("default").is_some()
+        } else {
+            root.get_mut("profiles")
+                .and_then(toml::Value::as_table_mut)
+                .and_then(|t| t.remove(profile_name))
+                .is_some()
+        };
+
+        if !removed {
+            return Err(format!("profile '{profile_name}' not found").into());
+        }
+
+        std::fs::write(&path, toml::to_string_pretty(&doc)?)?;
+        Ok(())
+    })();
+
+    match result {
+        Ok(()) => {
+            eprintln!("  {} Removed profile '{profile_name}'", sym_ok());
+        }
+        Err(e) => {
+            eprintln!("  {} {e}", sym_fail());
+            std::process::exit(crate::output::exit_codes::GENERAL_ERROR);
+        }
+    }
 }
 
 const PAT_PATH: &str = "/secure/ViewProfile.jspa?selectedTab=com.atlassian.pats.pats-plugin:jira-user-personal-access-tokens";
@@ -858,17 +1292,168 @@ token = "supersecrettoken"
 
     // ── config::init ───────────────────────────────────────────────────────────
 
-    #[test]
-    fn init_json_output_includes_example_and_paths() {
+    #[tokio::test]
+    async fn init_json_output_includes_example_and_paths() {
         let out = crate::output::OutputConfig::new(true, true);
-        // No env or config needed — init() never loads credentials
-        init(&out, Some("jira.corp.com"));
+        // No env or config needed — init() never loads credentials in JSON mode
+        init(&out, Some("jira.corp.com")).await;
+    }
+
+    // The text path of init() requires an interactive TTY; in test context stdin is
+    // not a TTY so it prints a short message and returns without hanging.
+    #[tokio::test]
+    async fn init_non_interactive_prints_message_without_error() {
+        let out = crate::output::OutputConfig {
+            json: false,
+            quiet: false,
+        };
+        // stdin is not a TTY in tests — must return immediately, not hang
+        init(&out, None).await;
     }
 
     #[test]
-    fn init_text_output_renders_without_error() {
-        let out = crate::output::OutputConfig::new(false, true);
-        init(&out, None);
+    fn write_profile_to_config_creates_default_profile() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("jira").join("config.toml");
+
+        write_profile_to_config(
+            &path,
+            "default",
+            "acme.atlassian.net",
+            Some("me@acme.com"),
+            "secret",
+            "basic",
+            3,
+        )
+        .unwrap();
+
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(content.contains("acme.atlassian.net"));
+        assert!(content.contains("me@acme.com"));
+        assert!(content.contains("secret"));
+        // basic/v3 are defaults and should not add redundant keys
+        assert!(!content.contains("auth_type"));
+    }
+
+    #[test]
+    fn write_profile_to_config_creates_named_pat_profile() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("config.toml");
+
+        write_profile_to_config(&path, "dc", "jira.corp.com", None, "pattoken", "pat", 2).unwrap();
+
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(content.contains("[profiles.dc]"));
+        assert!(content.contains("jira.corp.com"));
+        assert!(content.contains("pattoken"));
+        assert!(content.contains("auth_type"));
+        assert!(content.contains("api_version"));
+        assert!(!content.contains("email"));
+    }
+
+    #[test]
+    fn write_profile_to_config_preserves_other_profiles() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("config.toml");
+
+        // Write initial config with a default profile
+        std::fs::write(
+            &path,
+            "[default]\nhost = \"first.atlassian.net\"\nemail = \"a@b.com\"\ntoken = \"tok1\"\n",
+        )
+        .unwrap();
+
+        // Add a second named profile without touching default
+        write_profile_to_config(
+            &path,
+            "work",
+            "work.atlassian.net",
+            Some("w@work.com"),
+            "tok2",
+            "basic",
+            3,
+        )
+        .unwrap();
+
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            content.contains("first.atlassian.net"),
+            "default profile must be preserved"
+        );
+        assert!(
+            content.contains("work.atlassian.net"),
+            "new profile must be written"
+        );
+    }
+
+    // ── remove_profile ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn remove_profile_removes_default_section() {
+        let _env = ProcessEnvLock::acquire().unwrap();
+        let dir = TempDir::new().unwrap();
+        let path = write_config(
+            dir.path(),
+            "[default]\nhost = \"acme.atlassian.net\"\nemail = \"me@acme.com\"\ntoken = \"tok\"\n",
+        )
+        .unwrap();
+
+        let _config_dir = set_config_dir_env(dir.path());
+        remove_profile("default");
+
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(!content.contains("[default]"));
+        assert!(!content.contains("acme.atlassian.net"));
+    }
+
+    #[test]
+    fn remove_profile_removes_named_profile_preserves_others() {
+        let _env = ProcessEnvLock::acquire().unwrap();
+        let dir = TempDir::new().unwrap();
+        let path = write_config(
+            dir.path(),
+            "[default]\nhost = \"first.atlassian.net\"\ntoken = \"tok1\"\n\n\
+             [profiles.work]\nhost = \"work.atlassian.net\"\ntoken = \"tok2\"\n",
+        )
+        .unwrap();
+
+        let _config_dir = set_config_dir_env(dir.path());
+        remove_profile("work");
+
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            !content.contains("work.atlassian.net"),
+            "work profile must be gone"
+        );
+        assert!(
+            content.contains("first.atlassian.net"),
+            "default profile must be preserved"
+        );
+    }
+
+    #[test]
+    fn remove_profile_last_named_profile_leaves_default_intact() {
+        let _env = ProcessEnvLock::acquire().unwrap();
+        let dir = TempDir::new().unwrap();
+        let path = write_config(
+            dir.path(),
+            "[default]\nhost = \"acme.atlassian.net\"\ntoken = \"tok\"\n\n\
+             [profiles.staging]\nhost = \"staging.atlassian.net\"\ntoken = \"tok2\"\n",
+        )
+        .unwrap();
+
+        let _config_dir = set_config_dir_env(dir.path());
+        remove_profile("staging");
+
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            !content.contains("staging.atlassian.net"),
+            "staging must be gone"
+        );
+        assert!(
+            content.contains("acme.atlassian.net"),
+            "default must be preserved"
+        );
     }
 
     // ── dc_pat_url ─────────────────────────────────────────────────────────────
