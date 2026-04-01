@@ -10,6 +10,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 
 
+
+## [0.3.4](https://github.com/rvben/jira-cli/compare/v0.3.3...v0.3.4) - 2026-04-01
+
+### Added
+
+- add read-only mode via JIRA_READ_ONLY env var and config field ([68e15a3](https://github.com/rvben/jira-cli/commit/68e15a353c5000488516ccc929597c6da5df7929))
+
 ## [0.3.3](https://github.com/rvben/jira-cli/compare/v0.3.2...v0.3.3) - 2026-03-31
 
 ### Fixed
