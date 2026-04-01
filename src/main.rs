@@ -497,6 +497,32 @@ async fn run(cli: Cli, out: OutputConfig) -> Result<(), Box<dyn std::error::Erro
     }
 
     let cfg = Config::load(cli.host, cli.email, cli.profile)?;
+
+    if cfg.read_only {
+        let is_write = matches!(
+            &cli.command,
+            Command::Issues(
+                IssuesCommand::Create { .. }
+                    | IssuesCommand::Update { .. }
+                    | IssuesCommand::Move { .. }
+                    | IssuesCommand::Comment { .. }
+                    | IssuesCommand::Transition { .. }
+                    | IssuesCommand::Assign { .. }
+                    | IssuesCommand::Link { .. }
+                    | IssuesCommand::Unlink { .. }
+                    | IssuesCommand::LogWork { .. }
+                    | IssuesCommand::BulkTransition { .. }
+                    | IssuesCommand::BulkAssign { .. }
+            )
+        );
+        if is_write {
+            return Err(ApiError::InvalidInput(
+                "read-only mode is enabled (unset JIRA_READ_ONLY or remove read_only from config to allow writes)".into(),
+            )
+            .into());
+        }
+    }
+
     let client = JiraClient::new(
         &cfg.host,
         &cfg.email,

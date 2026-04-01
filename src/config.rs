@@ -14,6 +14,7 @@ pub struct ProfileConfig {
     pub token: Option<String>,
     pub auth_type: Option<String>,
     pub api_version: Option<u8>,
+    pub read_only: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -27,6 +28,7 @@ struct RawConfig {
     token: Option<String>,
     auth_type: Option<String>,
     api_version: Option<u8>,
+    read_only: Option<bool>,
 }
 
 impl RawConfig {
@@ -41,6 +43,7 @@ impl RawConfig {
                 .clone()
                 .or_else(|| self.auth_type.clone()),
             api_version: self.default.api_version.or(self.api_version),
+            read_only: self.default.read_only.or(self.read_only),
         }
     }
 }
@@ -53,6 +56,7 @@ pub struct Config {
     pub token: String,
     pub auth_type: AuthType,
     pub api_version: u8,
+    pub read_only: bool,
 }
 
 impl Config {
@@ -124,12 +128,18 @@ impl Config {
             AuthType::Pat => email.unwrap_or_default(),
         };
 
+        let read_only = env_var("JIRA_READ_ONLY")
+            .map(|v| matches!(v.as_str(), "1" | "true" | "TRUE" | "yes" | "on"))
+            .or(file_profile.read_only)
+            .unwrap_or(false);
+
         Ok(Self {
             host,
             email,
             token,
             auth_type,
             api_version,
+            read_only,
         })
     }
 }
