@@ -1,6 +1,7 @@
 # jira
 
 [![CI](https://github.com/rvben/jira-cli/actions/workflows/ci.yml/badge.svg)](https://github.com/rvben/jira-cli/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/gh/rvben/jira-cli/graph/badge.svg)](https://codecov.io/gh/rvben/jira-cli)
 
 An agent-friendly Jira CLI for Jira Cloud and Jira Data Center / Server.
 
