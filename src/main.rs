@@ -57,6 +57,16 @@ enum Command {
     #[command(subcommand, arg_required_else_help = true)]
     Issues(IssuesCommand),
 
+    /// Show a single issue (shortcut for `issues show`)
+    Issue {
+        /// Issue key (e.g. PROJ-123)
+        key: String,
+
+        /// Open the issue in your default browser
+        #[arg(long)]
+        open: bool,
+    },
+
     /// List projects
     #[command(subcommand, arg_required_else_help = true)]
     Projects(ProjectsCommand),
@@ -532,6 +542,8 @@ async fn run(cli: Cli, out: OutputConfig) -> Result<(), Box<dyn std::error::Erro
     )?;
 
     match cli.command {
+        Command::Issue { key, open } => commands::issues::show(&client, &out, &key, open).await?,
+
         Command::Issues(cmd) => match cmd {
             IssuesCommand::List {
                 project,
@@ -820,6 +832,7 @@ fn schema_json() -> serde_json::Value {
         }})),
         ("config init", serde_json::json!({ "json_shape": init_shape })),
         ("init", serde_json::json!({ "alias_for": "config init", "json_shape": init_shape })),
+        ("issue", serde_json::json!({ "alias_for": "issues show" })),
     ]
     .into_iter()
     .collect();
