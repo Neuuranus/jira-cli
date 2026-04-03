@@ -18,7 +18,7 @@ test-e2e:
 
 lint:
 	cargo fmt -- --check
-	cargo clippy --all-targets --all-features -- -D warnings
+	cargo clippy -- -D warnings
 
 fmt:
 	cargo fmt

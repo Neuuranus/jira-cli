@@ -4,6 +4,18 @@ on:
   push:
     tags:
       - "v*"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Dry run (skip publishing)'
+        required: false
+        default: true
+        type: boolean
+      skip_crates_io:
+        description: 'Skip crates.io publish'
+        required: false
+        default: false
+        type: boolean
 
 jobs:
   publish:
@@ -14,19 +26,30 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: "1.90"
           components: rustfmt, clippy
 
       - name: Cache
         uses: Swatinem/rust-cache@v2
 
-      - name: Install nextest
-        uses: taiki-e/install-action@nextest
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: nextest
 
       - name: Check
         run: make check
 
       - name: Publish to crates.io
-        run: make publish
+        if: ${{ inputs.dry_run != true && inputs.skip_crates_io != true }}
+        run: cargo publish --locked
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+      - name: Test crates.io publish (dry run)
+        if: ${{ inputs.dry_run == true && inputs.skip_crates_io != true }}
+        run: |
+          echo "DRY RUN: Would publish to crates.io"
+          cargo publish --dry-run --locked
+
+      - name: Skip crates.io publishing
+        if: ${{ inputs.skip_crates_io == true }}
+        run: echo "Skipping crates.io publishing as requested"
