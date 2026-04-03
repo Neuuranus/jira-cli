@@ -3,7 +3,7 @@ name: Release
 on:
   push:
     tags:
-      - "v*"
+      - "v[0-9]*.[0-9]*.[0-9]*"
   workflow_dispatch:
     inputs:
       dry_run:
@@ -17,29 +17,78 @@ on:
         default: false
         type: boolean
 
+permissions:
+  contents: write
+
 jobs:
-  publish:
+  test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt, clippy
-
-      - name: Cache
-        uses: Swatinem/rust-cache@v2
-
+      - uses: dtolnay/rust-toolchain@stable
       - uses: taiki-e/install-action@v2
         with:
           tool: nextest
+      - run: cargo check --locked
+      - run: make test
 
-      - name: Check
-        run: make check
+  build:
+    needs: test
+    strategy:
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-latest
+          - target: x86_64-apple-darwin
+            os: macos-latest
+          - target: aarch64-apple-darwin
+            os: macos-latest
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - name: Install cross-compilation tools
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu
+      - name: Build binary
+        run: cargo build --release --target ${{ matrix.target }}
+        env:
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
+      - name: Verify binary
+        if: ${{ !contains(matrix.target, 'aarch64-unknown-linux') }}
+        run: ./target/${{ matrix.target }}/release/jira --version
+      - name: Package binary
+        run: |
+          ARCHIVE_NAME="jira-cli-${{ github.ref_name }}-${{ matrix.target }}"
+          mkdir -p "${ARCHIVE_NAME}"
+          cp "target/${{ matrix.target }}/release/jira" "${ARCHIVE_NAME}/"
+          tar czf "${ARCHIVE_NAME}.tar.gz" "${ARCHIVE_NAME}"
+          shasum -a 256 "${ARCHIVE_NAME}.tar.gz" > "${ARCHIVE_NAME}.tar.gz.sha256"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.target }}
+          path: |
+            jira-cli-*.tar.gz
+            jira-cli-*.tar.gz.sha256
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: /tmp/artifacts
+      - uses: dtolnay/rust-toolchain@stable
 
       - name: Publish to crates.io
-        if: ${{ inputs.dry_run != true && inputs.skip_crates_io != true }}
+        if: ${{ !inputs.dry_run && !inputs.skip_crates_io }}
         run: cargo publish --locked
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
@@ -53,3 +102,101 @@ jobs:
       - name: Skip crates.io publishing
         if: ${{ inputs.skip_crates_io == true }}
         run: echo "Skipping crates.io publishing as requested"
+
+      - name: Create GitHub Release
+        if: ${{ !inputs.dry_run }}
+        run: |
+          gh release create ${{ github.ref_name }} \
+            --title "${{ github.ref_name }}" \
+            --generate-notes \
+            /tmp/artifacts/release-*/*.tar.gz \
+            /tmp/artifacts/release-*/*.sha256
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Dry Run Summary
+        if: ${{ inputs.dry_run == true }}
+        run: |
+          echo "Dry run complete. Artifacts built but nothing published."
+          echo "Archives:"
+          find /tmp/artifacts/release-* -type f | sort
+
+  update-homebrew:
+    needs: release
+    if: ${{ inputs.dry_run != true }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: /tmp/artifacts
+
+      - name: Compute SHA256 hashes
+        id: hashes
+        run: |
+          for target in x86_64-apple-darwin aarch64-apple-darwin x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu; do
+            sha=$(cat /tmp/artifacts/release-${target}/jira-cli-${{ github.ref_name }}-${target}.tar.gz.sha256 | awk '{print $1}')
+            key=$(echo "${target}" | tr '-' '_')
+            echo "${key}=${sha}" >> "$GITHUB_OUTPUT"
+          done
+
+      - name: Update Homebrew formula
+        env:
+          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          VERSION="${{ github.ref_name }}"
+          VERSION_NUM="${VERSION#v}"
+
+          cat > /tmp/jira-cli.rb << 'FORMULA'
+          class JiraCli < Formula
+            desc "CLI for Jira"
+            homepage "https://github.com/rvben/jira-cli"
+            version "VERSION_NUM"
+            license "MIT"
+
+            on_macos do
+              if Hardware::CPU.arm?
+                url "https://github.com/rvben/jira-cli/releases/download/VERSION/jira-cli-VERSION-aarch64-apple-darwin.tar.gz"
+                sha256 "SHA_AARCH64_APPLE_DARWIN"
+              else
+                url "https://github.com/rvben/jira-cli/releases/download/VERSION/jira-cli-VERSION-x86_64-apple-darwin.tar.gz"
+                sha256 "SHA_X86_64_APPLE_DARWIN"
+              end
+            end
+
+            on_linux do
+              if Hardware::CPU.arm?
+                url "https://github.com/rvben/jira-cli/releases/download/VERSION/jira-cli-VERSION-aarch64-unknown-linux-gnu.tar.gz"
+                sha256 "SHA_AARCH64_UNKNOWN_LINUX_GNU"
+              else
+                url "https://github.com/rvben/jira-cli/releases/download/VERSION/jira-cli-VERSION-x86_64-unknown-linux-gnu.tar.gz"
+                sha256 "SHA_X86_64_UNKNOWN_LINUX_GNU"
+              end
+            end
+
+            def install
+              bin.install "jira"
+            end
+
+            test do
+              system "#{bin}/jira", "--version"
+            end
+          end
+          FORMULA
+
+          sed -i "s/VERSION_NUM/${VERSION_NUM}/g" /tmp/jira-cli.rb
+          sed -i "s/VERSION/${VERSION}/g" /tmp/jira-cli.rb
+          sed -i "s/SHA_AARCH64_APPLE_DARWIN/${{ steps.hashes.outputs.aarch64_apple_darwin }}/g" /tmp/jira-cli.rb
+          sed -i "s/SHA_X86_64_APPLE_DARWIN/${{ steps.hashes.outputs.x86_64_apple_darwin }}/g" /tmp/jira-cli.rb
+          sed -i "s/SHA_AARCH64_UNKNOWN_LINUX_GNU/${{ steps.hashes.outputs.aarch64_unknown_linux_gnu }}/g" /tmp/jira-cli.rb
+          sed -i "s/SHA_X86_64_UNKNOWN_LINUX_GNU/${{ steps.hashes.outputs.x86_64_unknown_linux_gnu }}/g" /tmp/jira-cli.rb
+
+          # Clone tap repo, update formula, push
+          git clone https://x-access-token:${GH_TOKEN}@github.com/rvben/homebrew-tap.git /tmp/tap
+          mkdir -p /tmp/tap/Formula
+          cp /tmp/jira-cli.rb /tmp/tap/Formula/jira-cli.rb
+          cd /tmp/tap
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Formula/jira-cli.rb
+          git diff --cached --quiet || git commit -m "Update jira-cli to ${VERSION}"
+          git push
