@@ -14,6 +14,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 
 
+
+## [0.3.8](https://github.com/rvben/jira-cli/compare/v0.3.7...v0.3.8) - 2026-04-07
+
+### Added
+
+- `jira issue PROJ-123` falls through to `issues show` ([3764b1f](https://github.com/rvben/jira-cli/commit/3764b1f746a60bd853677b7d38a32d014002c5fe))
+- add singular aliases for all subcommand groups ([2d05eea](https://github.com/rvben/jira-cli/commit/2d05eea6fa74ae5ee1ddadf169a54afa43d1490d))
+
+### Fixed
+
+- schema tests acquire env lock to prevent XDG_CONFIG_HOME leakage ([204b794](https://github.com/rvben/jira-cli/commit/204b79422741328a81be0b70744a8a9078e8eb4b))
+
 ## [0.3.7](https://github.com/rvben/jira-cli/compare/v0.3.6...v0.3.7) - 2026-04-03
 
 ### Added
