@@ -54,21 +54,11 @@ struct Cli {
 #[derive(Subcommand)]
 enum Command {
     /// Manage issues
-    #[command(subcommand, arg_required_else_help = true)]
+    #[command(subcommand, visible_alias = "issue", arg_required_else_help = true)]
     Issues(IssuesCommand),
 
-    /// Show a single issue (shortcut for `issues show`)
-    Issue {
-        /// Issue key (e.g. PROJ-123)
-        key: String,
-
-        /// Open the issue in your default browser
-        #[arg(long)]
-        open: bool,
-    },
-
     /// List projects
-    #[command(subcommand, arg_required_else_help = true)]
+    #[command(subcommand, visible_alias = "project", arg_required_else_help = true)]
     Projects(ProjectsCommand),
 
     /// Search issues with JQL
@@ -90,15 +80,15 @@ enum Command {
     },
 
     /// Search for users by name or email
-    #[command(subcommand, arg_required_else_help = true)]
+    #[command(subcommand, visible_alias = "user", arg_required_else_help = true)]
     Users(UsersCommand),
 
     /// List boards
-    #[command(subcommand, arg_required_else_help = true)]
+    #[command(subcommand, visible_alias = "board", arg_required_else_help = true)]
     Boards(BoardsCommand),
 
     /// List sprints
-    #[command(subcommand, arg_required_else_help = true)]
+    #[command(subcommand, visible_alias = "sprint", arg_required_else_help = true)]
     Sprints(SprintsCommand),
 
     /// Show the currently authenticated user
@@ -112,7 +102,7 @@ enum Command {
     Init,
 
     /// List available fields (system and custom)
-    #[command(subcommand, arg_required_else_help = true)]
+    #[command(subcommand, visible_alias = "field", arg_required_else_help = true)]
     Fields(FieldsCommand),
 
     /// Dump all commands and arguments as JSON for agent introspection
@@ -542,8 +532,6 @@ async fn run(cli: Cli, out: OutputConfig) -> Result<(), Box<dyn std::error::Erro
     )?;
 
     match cli.command {
-        Command::Issue { key, open } => commands::issues::show(&client, &out, &key, open).await?,
-
         Command::Issues(cmd) => match cmd {
             IssuesCommand::List {
                 project,
