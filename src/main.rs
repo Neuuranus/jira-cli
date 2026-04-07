@@ -54,7 +54,7 @@ struct Cli {
 #[derive(Subcommand)]
 enum Command {
     /// Manage issues
-    #[command(subcommand, visible_alias = "issue", arg_required_else_help = true)]
+    #[command(subcommand, visible_alias = "issue")]
     Issues(IssuesCommand),
 
     /// List projects
@@ -383,6 +383,10 @@ enum IssuesCommand {
         #[arg(long)]
         dry_run: bool,
     },
+
+    /// Catch bare issue keys: `jira issue PROJ-123` → `jira issues show PROJ-123`
+    #[command(external_subcommand)]
+    External(Vec<String>),
 }
 
 #[derive(Subcommand)]
@@ -691,6 +695,13 @@ async fn run(cli: Cli, out: OutputConfig) -> Result<(), Box<dyn std::error::Erro
                 assignee,
                 dry_run,
             } => commands::issues::bulk_assign(&client, &out, &jql, &assignee, dry_run).await?,
+            IssuesCommand::External(args) => {
+                let key = args
+                    .first()
+                    .ok_or_else(|| ApiError::InvalidInput("missing issue key".into()))?;
+                let open = args.iter().any(|a| a == "--open");
+                commands::issues::show(&client, &out, key, open).await?
+            }
         },
 
         Command::Projects(cmd) => match cmd {
