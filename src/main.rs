@@ -1124,11 +1124,15 @@ fn fish_completion_path() -> Result<std::path::PathBuf, ApiError> {
 mod tests {
     use super::*;
     use jira_cli::api::ApiError;
-    use jira_cli::test_support::{EnvVarGuard, ProcessEnvLock, set_config_dir_env};
+    use jira_cli::test_support::{
+        EnvVarGuard, ProcessEnvLock, set_config_dir_env, unset_config_dir_env,
+    };
     use tempfile::TempDir;
 
     #[test]
     fn schema_does_not_advertise_nonexistent_token_flag() {
+        let _env = ProcessEnvLock::acquire().unwrap();
+        let _config_dir = unset_config_dir_env();
         let schema = schema_json();
         let global_flags = schema["global_flags"].as_array().unwrap();
         assert!(
@@ -1145,6 +1149,8 @@ mod tests {
 
     #[test]
     fn schema_auth_describes_runtime_config_path_and_effective_requirements() {
+        let _env = ProcessEnvLock::acquire().unwrap();
+        let _config_dir = unset_config_dir_env();
         let schema = schema_json();
         let auth = &schema["auth"];
 
@@ -1176,6 +1182,8 @@ mod tests {
 
     #[test]
     fn schema_config_init_uses_platform_specific_bootstrap_guidance() {
+        let _env = ProcessEnvLock::acquire().unwrap();
+        let _config_dir = unset_config_dir_env();
         let schema = schema_json();
         let config_init = schema["commands"]
             .as_array()
