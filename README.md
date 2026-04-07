@@ -71,6 +71,7 @@ All credentials can be set via environment variables — useful for CI and scrip
 | `JIRA_PROFILE` | Config profile name |
 | `JIRA_AUTH_TYPE` | `basic` (default) or `pat` |
 | `JIRA_API_VERSION` | `3` (Cloud, default) or `2` (Data Center / Server) |
+| `JIRA_READ_ONLY` | Block write operations (`1`, `true`, `yes`, `on`) |
 
 ### Multiple profiles
 
@@ -225,6 +226,36 @@ jira config init             # same as jira init
 jira schema | jq '.commands[] | .name'
 jira schema | jq '.commands[] | select(.name == "issues list")'
 ```
+
+### Read-only mode
+
+Set `JIRA_READ_ONLY=1` to block all write operations (create, update, transition, comment, assign, etc.). The CLI will return exit code 2 with a clear error message for any blocked command. This is useful when giving an AI agent read access to Jira without the risk of unintended modifications.
+
+You can set it in the config file:
+
+```toml
+[default]
+read_only = true
+```
+
+Or per-profile:
+
+```toml
+[profiles.agent]
+read_only = true
+```
+
+When giving an AI agent access to the CLI, set the env var in the agent's configuration. For example, in Claude Code's `.claude/settings.json`:
+
+```json
+{
+  "env": {
+    "JIRA_READ_ONLY": "1"
+  }
+}
+```
+
+Any agent that supports environment variable configuration can use the same approach.
 
 ## Exit codes
 
