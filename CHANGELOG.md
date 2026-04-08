@@ -15,6 +15,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 
 
+
+## [0.3.9](https://github.com/rvben/jira-cli/compare/v0.3.8...v0.3.9) - 2026-04-08
+
+### Added
+
+- publish to PyPI as jira-cli-rs ([8f5370a](https://github.com/rvben/jira-cli/commit/8f5370a26bd9b162be95c7f5e78a47a6771fd9a8))
+
 ## [0.3.8](https://github.com/rvben/jira-cli/compare/v0.3.7...v0.3.8) - 2026-04-07
 
 ### Added
