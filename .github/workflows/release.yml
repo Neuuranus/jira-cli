@@ -16,6 +16,11 @@ on:
         required: false
         default: false
         type: boolean
+      skip_pypi:
+        description: 'Skip PyPI publish'
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: write
@@ -56,6 +61,19 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y gcc-aarch64-linux-gnu
+      - name: Install maturin and zig
+        run: pip install maturin ziglang
+      - name: Build wheel
+        shell: bash
+        run: |
+          case "${{ matrix.target }}" in
+            *-gnu)
+              maturin build --release --target ${{ matrix.target }} --zig
+              ;;
+            *)
+              maturin build --release --target ${{ matrix.target }}
+              ;;
+          esac
       - name: Build binary
         run: cargo build --release --target ${{ matrix.target }}
         env:
@@ -76,9 +94,24 @@ jobs:
           path: |
             jira-cli-*.tar.gz
             jira-cli-*.tar.gz.sha256
+            target/wheels/*.whl
+
+  sdist:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install maturin
+        run: pip install maturin
+      - name: Build sdist
+        run: maturin sdist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sdist
+          path: target/wheels/*.tar.gz
 
   release:
-    needs: build
+    needs: [build, sdist]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -102,6 +135,15 @@ jobs:
       - name: Skip crates.io publishing
         if: ${{ inputs.skip_crates_io == true }}
         run: echo "Skipping crates.io publishing as requested"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+
+      - name: Publish to PyPI
+        if: ${{ !inputs.dry_run && !inputs.skip_pypi }}
+        run: uv publish /tmp/artifacts/release-*/*.whl /tmp/artifacts/sdist/*.tar.gz
+        env:
+          UV_PUBLISH_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
 
       - name: Create GitHub Release
         if: ${{ !inputs.dry_run }}

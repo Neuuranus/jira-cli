@@ -23,6 +23,12 @@ $ jira issues list --project MYAPP --json
 ## Installation
 
 ```sh
+uv tool install jira-cli-rs
+```
+
+Or via Cargo:
+
+```sh
 cargo install jira-cli
 ```
 
