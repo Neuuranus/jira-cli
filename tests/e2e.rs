@@ -77,8 +77,7 @@ async fn e2e_search_returns_results() {
         .search(&format!("project = {project} ORDER BY updated DESC"), 10, 0)
         .await
         .expect("search failed");
-    assert!(resp.total > 0, "expected issues in project {project}");
-    assert!(!resp.issues.is_empty());
+    assert!(!resp.issues.is_empty(), "expected issues in project {project}");
 }
 
 #[tokio::test]
@@ -283,15 +282,22 @@ async fn e2e_search_all_pages() {
         .await
         .expect("fetch_all_issues failed");
 
-    // Verify count matches the reported total
+    // If the server reported a total (v2 only), verify it matches.
+    // Jira Cloud (v3) `/search/jql` no longer returns a total.
     let first_page = client.search(&jql, 1, 0).await.expect("search failed");
-    assert_eq!(
-        all.len(),
-        first_page.total,
-        "fetch_all_issues returned {} issues but total is {}",
-        all.len(),
-        first_page.total
-    );
+    if let Some(total) = first_page.total {
+        assert_eq!(
+            all.len(),
+            total,
+            "fetch_all_issues returned {} issues but total is {total}",
+            all.len(),
+        );
+    } else {
+        assert!(
+            !all.is_empty(),
+            "fetch_all_issues returned no issues for project {project}",
+        );
+    }
 }
 
 #[tokio::test]

@@ -1,4 +1,6 @@
-use wiremock::matchers::{header, method, path, path_regex, query_param, query_param_contains};
+use wiremock::matchers::{
+    body_partial_json, body_string_contains, header, method, path, path_regex, query_param,
+};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use jira_cli::api::{ApiError, AuthType, JiraClient};
@@ -76,7 +78,34 @@ fn issue_fixture(key: &str, summary: &str, status: &str) -> serde_json::Value {
     })
 }
 
+/// JSON body for the Jira Cloud `/rest/api/3/search/jql` endpoint.
+///
+/// `is_last` defaults to true (no more pages) so mocks in simple single-page
+/// tests don't need to specify it. Pass `next_token = Some("…")` and
+/// `is_last = false` when mocking multi-page pagination.
+fn search_jql_response(
+    issues: Vec<serde_json::Value>,
+    next_token: Option<&str>,
+    is_last: bool,
+) -> serde_json::Value {
+    let mut body = serde_json::json!({
+        "issues": issues,
+        "isLast": is_last,
+    });
+    if let Some(t) = next_token {
+        body["nextPageToken"] = serde_json::Value::String(t.to_string());
+    }
+    body
+}
+
+/// Convenience: single-page `/search/jql` response with `isLast = true`.
 fn search_response(issues: Vec<serde_json::Value>) -> serde_json::Value {
+    search_jql_response(issues, None, true)
+}
+
+/// JSON body for the legacy API v2 `/rest/api/2/search` endpoint (offset+total).
+#[allow(dead_code)]
+fn search_v2_response(issues: Vec<serde_json::Value>) -> serde_json::Value {
     let count = issues.len();
     serde_json::json!({
         "issues": issues,
@@ -186,34 +215,36 @@ async fn search_returns_issues_with_pagination_metadata() {
     let server = MockServer::start().await;
     let issue = issue_fixture("PROJ-1", "First issue", "To Do");
 
-    Mock::given(method("GET"))
-        .and(path("/rest/api/3/search"))
+    // Cloud `/search/jql` response: no `total`, cursor-based pagination.
+    Mock::given(method("POST"))
+        .and(path("/rest/api/3/search/jql"))
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
             "issues": [issue],
-            "total": 42,
-            "startAt": 0,
-            "maxResults": 1,
+            "isLast": true,
         })))
         .mount(&server)
         .await;
 
     let client = test_client(&server);
     let resp = client.search("project = PROJ", 1, 0).await.unwrap();
-    assert_eq!(resp.total, 42);
+    assert!(resp.total.is_none(), "Cloud does not return a total");
     assert_eq!(resp.start_at, 0);
+    assert!(resp.is_last);
     assert_eq!(resp.issues.len(), 1);
     assert_eq!(resp.issues[0].key, "PROJ-1");
 }
 
 #[tokio::test]
-async fn search_passes_jql_as_query_param() {
+async fn search_v3_passes_jql_in_post_body() {
     let server = MockServer::start().await;
 
-    Mock::given(method("GET"))
-        .and(path("/rest/api/3/search"))
-        .and(query_param_contains("jql", "project"))
-        .and(query_param_contains("jql", "PROJ"))
+    Mock::given(method("POST"))
+        .and(path("/rest/api/3/search/jql"))
+        .and(body_partial_json(
+            serde_json::json!({ "jql": "project = PROJ" }),
+        ))
         .respond_with(ResponseTemplate::new(200).set_body_json(search_response(vec![])))
+        .expect(1)
         .mount(&server)
         .await;
 
@@ -222,45 +253,72 @@ async fn search_passes_jql_as_query_param() {
 }
 
 #[tokio::test]
-async fn search_passes_offset_as_start_at() {
+async fn search_v3_walks_cursor_to_reach_offset() {
+    // The new Cloud `/search/jql` endpoint does not support `startAt`.
+    // With `offset = 25`, the client must first walk the cursor forward by
+    // issuing an `id`-only skip request, then make the real request using
+    // the returned `nextPageToken`.
     let server = MockServer::start().await;
 
-    Mock::given(method("GET"))
-        .and(path("/rest/api/3/search"))
-        .and(query_param("startAt", "25"))
+    // Skip request: no `nextPageToken`, returns a cursor for the real request.
+    Mock::given(method("POST"))
+        .and(path("/rest/api/3/search/jql"))
+        .and(body_partial_json(serde_json::json!({
+            "fields": ["id"],
+            "maxResults": 25,
+        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(search_jql_response(
+            (0..25)
+                .map(|i| serde_json::json!({ "id": i.to_string(), "key": format!("PROJ-{i}") }))
+                .collect(),
+            Some("cursor-after-25"),
+            false,
+        )))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    // Real request: carries the cursor and the full field list.
+    Mock::given(method("POST"))
+        .and(path("/rest/api/3/search/jql"))
+        .and(body_partial_json(serde_json::json!({
+            "nextPageToken": "cursor-after-25",
+        })))
         .respond_with(ResponseTemplate::new(200).set_body_json(search_response(vec![])))
         .expect(1)
         .mount(&server)
         .await;
 
     let client = test_client(&server);
-    client.search("project = PROJ", 25, 25).await.unwrap();
+    let resp = client.search("project = PROJ", 25, 25).await.unwrap();
+    assert_eq!(resp.start_at, 25);
+    assert!(resp.total.is_none(), "Cloud does not return a total");
 }
 
 #[tokio::test]
-async fn search_uses_post_for_long_jql_queries() {
+async fn search_v3_uses_post_with_fields_and_no_start_at() {
     let server = MockServer::start().await;
     let long_clause = "x".repeat(2000);
     let jql = format!("summary ~ \"{long_clause}\"");
 
-    // GET must NOT be called for long JQL — only POST avoids URL length limits
+    // GET must NEVER be used — the new endpoint is always called via POST.
     Mock::given(method("GET"))
-        .and(path("/rest/api/3/search"))
+        .and(path("/rest/api/3/search/jql"))
         .respond_with(ResponseTemplate::new(500).set_body_string("should not use GET"))
         .expect(0)
         .mount(&server)
         .await;
 
     Mock::given(method("POST"))
-        .and(path("/rest/api/3/search"))
+        .and(path("/rest/api/3/search/jql"))
         .respond_with(ResponseTemplate::new(200).set_body_json(search_response(vec![])))
         .expect(1)
         .mount(&server)
         .await;
 
     let client = test_client(&server);
-    let resp = client.search(&jql, 50, 0).await.unwrap();
-    // Body must carry jql, maxResults, startAt — not a URL parameter
+    let _resp = client.search(&jql, 50, 0).await.unwrap();
+
     let requests = server.received_requests().await.unwrap();
     let post_req = requests
         .iter()
@@ -269,8 +327,35 @@ async fn search_uses_post_for_long_jql_queries() {
     let body: serde_json::Value = serde_json::from_slice(&post_req.body).unwrap();
     assert_eq!(body["jql"], jql.as_str());
     assert_eq!(body["maxResults"], 50);
-    assert_eq!(body["startAt"], 0);
-    assert_eq!(resp.total, 0);
+    assert!(body.get("startAt").is_none(), "startAt must not be sent");
+    assert!(
+        body["fields"].is_array(),
+        "fields must be a JSON array on the new endpoint"
+    );
+}
+
+#[tokio::test]
+async fn search_v2_uses_classic_endpoint_with_start_at() {
+    let server = MockServer::start().await;
+
+    // API v2 (Data Center / Server) still uses /rest/api/2/search with startAt.
+    Mock::given(method("GET"))
+        .and(path("/rest/api/2/search"))
+        .and(query_param("startAt", "25"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "issues": [],
+                "total": 0,
+                "startAt": 25,
+                "maxResults": 25,
+            })),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = test_client_v2(&server);
+    client.search("project = PROJ", 25, 25).await.unwrap();
 }
 
 // ── Issue detail ──────────────────────────────────────────────────────────────
@@ -758,8 +843,8 @@ async fn api_500_maps_to_api_error() {
 async fn search_encodes_jql_in_query_string() {
     let server = MockServer::start().await;
 
-    Mock::given(method("GET"))
-        .and(path("/rest/api/3/search"))
+    Mock::given(method("POST"))
+        .and(path("/rest/api/3/search/jql"))
         .respond_with(ResponseTemplate::new(200).set_body_json(search_response(vec![])))
         .mount(&server)
         .await;
@@ -1007,8 +1092,8 @@ fn missing_credentials_maps_to_input_error_exit_code() {
 async fn issues_list_with_no_results_succeeds() {
     let server = MockServer::start().await;
 
-    Mock::given(method("GET"))
-        .and(path("/rest/api/3/search"))
+    Mock::given(method("POST"))
+        .and(path("/rest/api/3/search/jql"))
         .respond_with(ResponseTemplate::new(200).set_body_json(search_response(vec![])))
         .mount(&server)
         .await;
@@ -1884,12 +1969,10 @@ async fn issues_list_type_filter_adds_issuetype_to_jql() {
     let server = MockServer::start().await;
     let client = test_client(&server);
 
-    Mock::given(method("GET"))
-        .and(path("/rest/api/3/search"))
-        .and(query_param_contains("jql", "issuetype"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-            "issues": [], "total": 0, "startAt": 0, "maxResults": 50
-        })))
+    Mock::given(method("POST"))
+        .and(path("/rest/api/3/search/jql"))
+        .and(body_string_contains("issuetype"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(search_response(vec![])))
         .expect(1)
         .mount(&server)
         .await;
@@ -1956,33 +2039,33 @@ async fn issues_list_all_fetches_multiple_pages() {
     let server = MockServer::start().await;
     let client = test_client(&server);
 
-    let page1 = serde_json::json!({
-        "issues": [issue_fixture("PROJ-1", "Issue 1", "Open")],
-        "total": 2,
-        "startAt": 0,
-        "maxResults": 1
-    });
-    let page2 = serde_json::json!({
-        "issues": [issue_fixture("PROJ-2", "Issue 2", "Open")],
-        "total": 2,
-        "startAt": 1,
-        "maxResults": 1
-    });
+    let page1 = search_jql_response(
+        vec![issue_fixture("PROJ-1", "Issue 1", "Open")],
+        Some("cursor-page-2"),
+        false,
+    );
+    let page2 = search_jql_response(
+        vec![issue_fixture("PROJ-2", "Issue 2", "Open")],
+        None,
+        true,
+    );
 
-    // First request: startAt=0
-    Mock::given(method("GET"))
-        .and(path("/rest/api/3/search"))
-        .and(query_param("startAt", "0"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(page1))
+    // Second request carries the cursor. Mount it first so it takes priority
+    // when both matchers match.
+    Mock::given(method("POST"))
+        .and(path("/rest/api/3/search/jql"))
+        .and(body_partial_json(
+            serde_json::json!({ "nextPageToken": "cursor-page-2" }),
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(page2))
         .expect(1)
         .mount(&server)
         .await;
 
-    // Second request: startAt=1
-    Mock::given(method("GET"))
-        .and(path("/rest/api/3/search"))
-        .and(query_param("startAt", "1"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(page2))
+    // First request: no nextPageToken. Matches any other POST to the endpoint.
+    Mock::given(method("POST"))
+        .and(path("/rest/api/3/search/jql"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(page1))
         .expect(1)
         .mount(&server)
         .await;
@@ -2000,31 +2083,32 @@ async fn search_all_fetches_multiple_pages() {
     let server = MockServer::start().await;
     let client = test_client(&server);
 
-    let page1 = serde_json::json!({
-        "issues": [issue_fixture("PROJ-1", "Issue 1", "Open")],
-        "total": 2,
-        "startAt": 0,
-        "maxResults": 1
-    });
-    let page2 = serde_json::json!({
-        "issues": [issue_fixture("PROJ-2", "Issue 2", "Open")],
-        "total": 2,
-        "startAt": 1,
-        "maxResults": 1
-    });
+    let page1 = search_jql_response(
+        vec![issue_fixture("PROJ-1", "Issue 1", "Open")],
+        Some("cursor-page-2"),
+        false,
+    );
+    let page2 = search_jql_response(
+        vec![issue_fixture("PROJ-2", "Issue 2", "Open")],
+        None,
+        true,
+    );
 
-    Mock::given(method("GET"))
-        .and(path("/rest/api/3/search"))
-        .and(query_param("startAt", "0"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(page1))
+    // Second request (mounted first so its more-specific matcher wins).
+    Mock::given(method("POST"))
+        .and(path("/rest/api/3/search/jql"))
+        .and(body_partial_json(
+            serde_json::json!({ "nextPageToken": "cursor-page-2" }),
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(page2))
         .expect(1)
         .mount(&server)
         .await;
 
-    Mock::given(method("GET"))
-        .and(path("/rest/api/3/search"))
-        .and(query_param("startAt", "1"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(page2))
+    // First request: no nextPageToken.
+    Mock::given(method("POST"))
+        .and(path("/rest/api/3/search/jql"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(page1))
         .expect(1)
         .mount(&server)
         .await;
@@ -2085,9 +2169,9 @@ async fn issues_mine_uses_current_user_assignee_filter() {
     let server = MockServer::start().await;
     let client = test_client(&server);
 
-    Mock::given(method("GET"))
-        .and(path("/rest/api/3/search"))
-        .and(query_param_contains("jql", "currentUser"))
+    Mock::given(method("POST"))
+        .and(path("/rest/api/3/search/jql"))
+        .and(body_string_contains("currentUser"))
         .respond_with(ResponseTemplate::new(200).set_body_json(search_response(vec![])))
         .mount(&server)
         .await;
@@ -2179,8 +2263,8 @@ async fn bulk_transition_dry_run_makes_no_api_calls() {
         issue_fixture("PROJ-2", "Issue 2", "To Do"),
     ];
 
-    Mock::given(method("GET"))
-        .and(path("/rest/api/3/search"))
+    Mock::given(method("POST"))
+        .and(path("/rest/api/3/search/jql"))
         .respond_with(ResponseTemplate::new(200).set_body_json(search_response(issues)))
         .mount(&server)
         .await;
@@ -2205,8 +2289,8 @@ async fn bulk_transition_calls_transition_for_each_issue() {
 
     let issues = vec![issue_fixture("PROJ-1", "Issue 1", "To Do")];
 
-    Mock::given(method("GET"))
-        .and(path("/rest/api/3/search"))
+    Mock::given(method("POST"))
+        .and(path("/rest/api/3/search/jql"))
         .respond_with(ResponseTemplate::new(200).set_body_json(search_response(issues)))
         .mount(&server)
         .await;
@@ -2252,8 +2336,8 @@ async fn bulk_assign_dry_run_makes_no_api_calls() {
 
     let issues = vec![issue_fixture("PROJ-1", "Issue 1", "Open")];
 
-    Mock::given(method("GET"))
-        .and(path("/rest/api/3/search"))
+    Mock::given(method("POST"))
+        .and(path("/rest/api/3/search/jql"))
         .respond_with(ResponseTemplate::new(200).set_body_json(search_response(issues)))
         .mount(&server)
         .await;
@@ -2271,8 +2355,8 @@ async fn bulk_assign_calls_assign_for_each_issue() {
 
     let issues = vec![issue_fixture("PROJ-1", "Issue 1", "Open")];
 
-    Mock::given(method("GET"))
-        .and(path("/rest/api/3/search"))
+    Mock::given(method("POST"))
+        .and(path("/rest/api/3/search/jql"))
         .respond_with(ResponseTemplate::new(200).set_body_json(search_response(issues)))
         .mount(&server)
         .await;
@@ -2624,8 +2708,8 @@ async fn bulk_assign_me_resolves_current_user_and_assigns() {
         .mount(&server)
         .await;
 
-    Mock::given(method("GET"))
-        .and(path("/rest/api/3/search"))
+    Mock::given(method("POST"))
+        .and(path("/rest/api/3/search/jql"))
         .respond_with(
             ResponseTemplate::new(200).set_body_json(search_response(vec![
                 issue_fixture("PROJ-1", "Issue 1", "Open"),
@@ -3105,8 +3189,8 @@ async fn projects_list_empty_succeeds() {
 async fn search_run_json_shape() {
     let server = MockServer::start().await;
 
-    Mock::given(method("GET"))
-        .and(path("/rest/api/3/search"))
+    Mock::given(method("POST"))
+        .and(path("/rest/api/3/search/jql"))
         .respond_with(
             ResponseTemplate::new(200).set_body_json(search_response(vec![
                 issue_fixture("PROJ-1", "First", "To Do"),
@@ -3127,18 +3211,18 @@ async fn search_run_json_shape() {
 async fn search_run_shows_pagination_info_when_more_results() {
     let server = MockServer::start().await;
 
-    // total=5 but only returning 2 — command must indicate more pages exist
-    Mock::given(method("GET"))
-        .and(path("/rest/api/3/search"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-            "issues": [
+    // Two issues returned with isLast=false — command must indicate more pages exist
+    // on the new Cloud endpoint.
+    Mock::given(method("POST"))
+        .and(path("/rest/api/3/search/jql"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(search_jql_response(
+            vec![
                 issue_fixture("PROJ-1", "First", "To Do"),
                 issue_fixture("PROJ-2", "Second", "Open"),
             ],
-            "total": 5,
-            "startAt": 0,
-            "maxResults": 2
-        })))
+            Some("next-cursor"),
+            false,
+        )))
         .mount(&server)
         .await;
 
@@ -3201,8 +3285,8 @@ async fn get_issue_403_returns_auth_error() {
 async fn search_429_returns_rate_limit_error() {
     let server = MockServer::start().await;
 
-    Mock::given(method("GET"))
-        .and(path("/rest/api/3/search"))
+    Mock::given(method("POST"))
+        .and(path("/rest/api/3/search/jql"))
         .respond_with(ResponseTemplate::new(429))
         .mount(&server)
         .await;

@@ -280,15 +280,50 @@ pub struct StatusCategory {
     pub name: String,
 }
 
+/// Raw page from the Jira Cloud `/rest/api/3/search/jql` endpoint.
+///
+/// Cursor-based. `is_last` is authoritative for end-of-results;
+/// `next_page_token` may be absent or null on the final page.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchJqlPage {
+    pub issues: Vec<Issue>,
+    #[serde(default)]
+    pub is_last: bool,
+    #[serde(default)]
+    pub next_page_token: Option<String>,
+}
+
+/// Lightweight page response used when walking the cursor forward with
+/// `fields=["id"]`. The returned issue objects then lack a `fields`
+/// sub-object, so the regular `Issue` deserialization would fail — we only
+/// need the issue count and the next cursor here.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchJqlSkipPage {
+    #[serde(default)]
+    pub issues: Vec<serde_json::Value>,
+    #[serde(default)]
+    pub is_last: bool,
+    #[serde(default)]
+    pub next_page_token: Option<String>,
+}
+
 /// Response from the Jira search endpoint.
+///
+/// `total` is `None` on Jira Cloud (API v3): the new `/search/jql` endpoint
+/// no longer returns an exact total. `is_last` is authoritative — use it to
+/// decide whether more pages exist.
 #[derive(Debug, Deserialize, Serialize)]
 pub struct SearchResponse {
     pub issues: Vec<Issue>,
-    pub total: usize,
+    pub total: Option<usize>,
     #[serde(rename = "startAt")]
     pub start_at: usize,
     #[serde(rename = "maxResults")]
     pub max_results: usize,
+    #[serde(rename = "isLast", default)]
+    pub is_last: bool,
 }
 
 /// Response from the transitions endpoint.

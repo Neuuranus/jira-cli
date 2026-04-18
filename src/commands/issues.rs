@@ -20,10 +20,11 @@ pub async fn list(
     let jql = build_list_jql(project, status, assignee, issue_type, sprint, jql_extra);
     if all {
         let issues = fetch_all_issues(client, &jql).await?;
-        render_results(out, &issues, issues.len(), 0, issues.len(), client, false);
+        let n = issues.len();
+        render_results(out, &issues, Some(n), 0, n, client, false);
     } else {
         let resp = client.search(&jql, limit, offset).await?;
-        let more = resp.total > resp.start_at + resp.issues.len();
+        let more = !resp.is_last;
         render_results(
             out,
             &resp.issues,
@@ -138,7 +139,7 @@ pub async fn fetch_all_issues(client: &JiraClient, jql: &str) -> Result<Vec<Issu
         let fetched = resp.issues.len();
         all.extend(resp.issues);
         offset += fetched;
-        if offset >= resp.total || fetched == 0 {
+        if resp.is_last || fetched == 0 {
             break;
         }
     }
@@ -148,16 +149,20 @@ pub async fn fetch_all_issues(client: &JiraClient, jql: &str) -> Result<Vec<Issu
 fn render_results(
     out: &OutputConfig,
     issues: &[Issue],
-    total: usize,
+    total: Option<usize>,
     start_at: usize,
     max_results: usize,
     client: &JiraClient,
     more: bool,
 ) {
     if out.json {
+        let total_json: serde_json::Value = match total {
+            Some(n) => serde_json::json!(n),
+            None => serde_json::Value::Null,
+        };
         out.print_data(
             &serde_json::to_string_pretty(&serde_json::json!({
-                "total": total,
+                "total": total_json,
                 "startAt": start_at,
                 "maxResults": max_results,
                 "issues": issues.iter().map(|i| issue_to_json(i, client)).collect::<Vec<_>>(),
@@ -167,12 +172,19 @@ fn render_results(
     } else {
         render_issue_table(issues, out);
         if more {
-            out.print_message(&format!(
-                "Showing {}-{} of {} issues — use --limit/--offset or --all to paginate",
-                start_at + 1,
-                start_at + issues.len(),
-                total
-            ));
+            match total {
+                Some(n) => out.print_message(&format!(
+                    "Showing {}-{} of {} issues — use --limit/--offset or --all to paginate",
+                    start_at + 1,
+                    start_at + issues.len(),
+                    n
+                )),
+                None => out.print_message(&format!(
+                    "Showing {}-{} issues (more available) — use --limit/--offset or --all to paginate",
+                    start_at + 1,
+                    start_at + issues.len()
+                )),
+            }
         } else {
             out.print_message(&format!("{} issues", issues.len()));
         }
