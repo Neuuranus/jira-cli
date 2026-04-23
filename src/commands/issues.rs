@@ -1053,12 +1053,40 @@ fn format_date(s: &str) -> String {
     s.chars().take(10).collect()
 }
 
-/// Get the terminal width from the COLUMNS env var, defaulting to 120.
+/// Minimum width to clamp narrow terminals to, so fixed columns (key, status,
+/// assignee, type) still leave at least 20 characters for the summary.
+const MIN_TERMINAL_WIDTH: usize = 60;
+
+/// Fallback width used when neither the TTY nor `COLUMNS` advertises a size —
+/// matches the historical default.
+const DEFAULT_TERMINAL_WIDTH: usize = 120;
+
+/// Determine the terminal width for rendering the issues table.
+///
+/// Query the live TTY first (via `ioctl(TIOCGWINSZ)` / Windows console APIs),
+/// fall back to `COLUMNS` for non-TTY contexts where the caller still wants
+/// to pin the width, and finally to a reasonable default.
 fn terminal_width() -> usize {
-    std::env::var("COLUMNS")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(120)
+    use std::io::IsTerminal;
+
+    let tty_width = std::io::stdout()
+        .is_terminal()
+        .then(terminal_size::terminal_size)
+        .flatten()
+        .map(|(terminal_size::Width(w), _)| w as usize);
+    let columns = std::env::var("COLUMNS").ok().and_then(|v| v.parse().ok());
+
+    resolve_terminal_width(tty_width, columns)
+}
+
+/// Pure resolution of the three width sources, in priority order. Extracted so
+/// the decision logic is testable without mocking the process environment or
+/// the TTY.
+fn resolve_terminal_width(tty_width: Option<usize>, columns: Option<usize>) -> usize {
+    if let Some(w) = tty_width {
+        return w.max(MIN_TERMINAL_WIDTH);
+    }
+    columns.unwrap_or(DEFAULT_TERMINAL_WIDTH)
 }
 
 #[cfg(test)]
@@ -1165,5 +1193,28 @@ mod tests {
         unsafe { std::env::set_var("COLUMNS", "200") };
         let _guard = EnvVarGuard("COLUMNS");
         assert_eq!(terminal_width(), 200);
+    }
+
+    #[test]
+    fn resolve_terminal_width_prefers_tty_over_columns() {
+        assert_eq!(resolve_terminal_width(Some(200), Some(80)), 200);
+    }
+
+    #[test]
+    fn resolve_terminal_width_clamps_narrow_tty_to_minimum() {
+        assert_eq!(resolve_terminal_width(Some(40), None), MIN_TERMINAL_WIDTH);
+    }
+
+    #[test]
+    fn resolve_terminal_width_does_not_clamp_columns_fallback() {
+        // Users who explicitly pin COLUMNS (e.g. for non-TTY output or tests)
+        // get exactly what they asked for; only the TTY-measured width is
+        // clamped.
+        assert_eq!(resolve_terminal_width(None, Some(40)), 40);
+    }
+
+    #[test]
+    fn resolve_terminal_width_defaults_when_nothing_available() {
+        assert_eq!(resolve_terminal_width(None, None), DEFAULT_TERMINAL_WIDTH);
     }
 }
