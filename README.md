@@ -78,6 +78,7 @@ All credentials can be set via environment variables — useful for CI and scrip
 | `JIRA_AUTH_TYPE` | `basic` (default) or `pat` |
 | `JIRA_API_VERSION` | `3` (Cloud, default) or `2` (Data Center / Server) |
 | `JIRA_READ_ONLY` | Block write operations (`1`, `true`, `yes`, `on`) |
+| `JIRA_DEBUG_HTTP` | Include the raw Jira response body in API error messages (`1`, `true`, `yes`). Useful when the default summary is ambiguous. |
 
 ### Multiple profiles
 

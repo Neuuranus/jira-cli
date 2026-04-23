@@ -910,10 +910,7 @@ fn summarize_json_error_body(body: &str) -> Option<String> {
     let mut parts = Vec::new();
 
     if !parsed.error_messages.is_empty() {
-        parts.push(format!(
-            "{} Jira error message(s) returned",
-            parsed.error_messages.len()
-        ));
+        parts.push(format_error_messages(&parsed.error_messages));
     }
 
     if !parsed.errors.is_empty() {
@@ -928,6 +925,38 @@ fn summarize_json_error_body(body: &str) -> Option<String> {
         None
     } else {
         Some(parts.join("; "))
+    }
+}
+
+/// Maximum number of Jira `errorMessages` entries to surface inline before
+/// collapsing the remainder into a `(+N more)` suffix.
+const MAX_ERROR_MESSAGES_SHOWN: usize = 3;
+
+/// Maximum character length of each individual message, so a single
+/// pathological Jira response cannot dominate the user-visible error line.
+const MAX_ERROR_MESSAGE_LEN: usize = 240;
+
+fn format_error_messages(messages: &[String]) -> String {
+    let shown: Vec<String> = messages
+        .iter()
+        .take(MAX_ERROR_MESSAGES_SHOWN)
+        .map(|m| truncate_message(m.trim()))
+        .collect();
+    let joined = shown.join(" | ");
+    let remaining = messages.len().saturating_sub(MAX_ERROR_MESSAGES_SHOWN);
+    if remaining > 0 {
+        format!("{joined} (+{remaining} more)")
+    } else {
+        joined
+    }
+}
+
+fn truncate_message(msg: &str) -> String {
+    if msg.chars().count() <= MAX_ERROR_MESSAGE_LEN {
+        msg.to_string()
+    } else {
+        let truncated: String = msg.chars().take(MAX_ERROR_MESSAGE_LEN).collect();
+        format!("{truncated}…")
     }
 }
 
@@ -1010,7 +1039,7 @@ mod tests {
     }
 
     #[test]
-    fn summarize_json_error_body_redacts_values() {
+    fn summarize_json_error_body_surfaces_messages_and_redacts_field_values() {
         let body = serde_json::json!({
             "errorMessages": ["JQL validation failed"],
             "errors": {
@@ -1021,11 +1050,70 @@ mod tests {
         .to_string();
 
         let message = summarize_error_body(400, &body);
-        assert!(message.contains("1 Jira error message(s) returned"));
+        // errorMessages are server-provided strings, safe to surface in full.
+        assert!(message.contains("JQL validation failed"));
+        // `errors` keys (field names) are safe; their values may echo user
+        // input and must stay redacted.
         assert!(message.contains("summary"));
         assert!(message.contains("description"));
         assert!(!message.contains("secret project name"));
         assert!(!message.contains("api token"));
+    }
+
+    #[test]
+    fn summarize_json_error_body_reports_retired_api() {
+        // Real payload shape returned by Atlassian after CHANGE-2046.
+        let body = serde_json::json!({
+            "errorMessages": [
+                "The requested API has been removed. Please migrate to the /rest/api/3/search/jql API."
+            ],
+            "errors": {}
+        })
+        .to_string();
+
+        let message = summarize_error_body(410, &body);
+        assert!(message.contains("The requested API has been removed"));
+        assert!(message.contains("/rest/api/3/search/jql"));
+    }
+
+    #[test]
+    fn summarize_json_error_body_joins_multiple_messages() {
+        let body = serde_json::json!({
+            "errorMessages": ["first problem", "second problem"],
+            "errors": {}
+        })
+        .to_string();
+
+        let message = summarize_error_body(400, &body);
+        assert!(message.contains("first problem"));
+        assert!(message.contains("second problem"));
+        assert!(message.contains(" | "));
+    }
+
+    #[test]
+    fn summarize_json_error_body_collapses_overflow_messages() {
+        let body = serde_json::json!({
+            "errorMessages": ["a", "b", "c", "d", "e"],
+            "errors": {}
+        })
+        .to_string();
+
+        let message = summarize_error_body(400, &body);
+        assert!(message.contains("(+2 more)"));
+    }
+
+    #[test]
+    fn summarize_json_error_body_truncates_oversized_message() {
+        let huge = "x".repeat(1000);
+        let body = serde_json::json!({
+            "errorMessages": [huge],
+            "errors": {}
+        })
+        .to_string();
+
+        let message = summarize_error_body(400, &body);
+        assert!(message.chars().count() < 500);
+        assert!(message.contains('…'));
     }
 
     #[test]
