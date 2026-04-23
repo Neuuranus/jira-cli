@@ -88,12 +88,15 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y gcc-aarch64-linux-gnu
+      - name: Install uv
+        if: matrix.target != 'aarch64-unknown-linux-gnu'
+        uses: astral-sh/setup-uv@v6
       - name: Install maturin and zig
         # maturin-action provides its own maturin inside the manylinux
         # container for the arm64 linux build, so skip the host install
         # on the self-hosted runner.
         if: matrix.target != 'aarch64-unknown-linux-gnu'
-        run: pip install maturin ziglang
+        run: uv tool install maturin --with ziglang
       - name: Build wheel (arm64 linux via maturin-action)
         if: matrix.target == 'aarch64-unknown-linux-gnu'
         uses: PyO3/maturin-action@v1
@@ -160,8 +163,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
       - name: Install maturin
-        run: pip install maturin
+        run: uv tool install maturin
       - name: Build sdist
         run: maturin sdist
       - uses: actions/upload-artifact@v4
