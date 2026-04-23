@@ -17,6 +17,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 
 
+
+## [0.3.11](https://github.com/rvben/jira-cli/compare/v0.3.10...v0.3.11) - 2026-04-23
+
+### Added
+
+- **issues**: detect real terminal width for the issues table ([7e44c00](https://github.com/rvben/jira-cli/commit/7e44c00359749e51743c28db37c97203cb5afd07))
+
+### Fixed
+
+- **errors**: surface Jira errorMessages in default error summary ([e7645a1](https://github.com/rvben/jira-cli/commit/e7645a1f61f94fb32297a0c7121dde0981a4addc))
+
 ## [0.3.10](https://github.com/rvben/jira-cli/compare/v0.3.9...v0.3.10) - 2026-04-23
 
 ### Fixed
