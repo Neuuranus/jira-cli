@@ -327,13 +327,24 @@ impl JiraClient {
                 // Offset is past the end of the result set.
                 return Ok(SearchResponse {
                     issues: Vec::new(),
-                    total: Some(skipped),
+                    total: None,
                     start_at,
                     max_results: 0,
                     is_last: true,
                 });
             }
             next_token = page.next_page_token;
+            if next_token.is_none() {
+                // Server reported more pages but returned no cursor; treat as end
+                // rather than silently restarting from page 0 on the next iteration.
+                return Ok(SearchResponse {
+                    issues: Vec::new(),
+                    total: None,
+                    start_at,
+                    max_results: 0,
+                    is_last: true,
+                });
+            }
         }
 
         // Collect up to `max_results` issues, paging internally to honour
@@ -404,7 +415,6 @@ impl JiraClient {
     }
 
     /// Create a new issue.
-    #[allow(clippy::too_many_arguments)]
     #[allow(clippy::too_many_arguments)]
     pub async fn create_issue(
         &self,

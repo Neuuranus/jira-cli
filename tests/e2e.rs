@@ -77,7 +77,10 @@ async fn e2e_search_returns_results() {
         .search(&format!("project = {project} ORDER BY updated DESC"), 10, 0)
         .await
         .expect("search failed");
-    assert!(!resp.issues.is_empty(), "expected issues in project {project}");
+    assert!(
+        !resp.issues.is_empty(),
+        "expected issues in project {project}"
+    );
 }
 
 #[tokio::test]

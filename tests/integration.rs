@@ -103,18 +103,6 @@ fn search_response(issues: Vec<serde_json::Value>) -> serde_json::Value {
     search_jql_response(issues, None, true)
 }
 
-/// JSON body for the legacy API v2 `/rest/api/2/search` endpoint (offset+total).
-#[allow(dead_code)]
-fn search_v2_response(issues: Vec<serde_json::Value>) -> serde_json::Value {
-    let count = issues.len();
-    serde_json::json!({
-        "issues": issues,
-        "total": count,
-        "startAt": 0,
-        "maxResults": 50
-    })
-}
-
 fn project_search_response(projects: Vec<serde_json::Value>) -> serde_json::Value {
     let total = projects.len();
     serde_json::json!({
@@ -267,13 +255,15 @@ async fn search_v3_walks_cursor_to_reach_offset() {
             "fields": ["id"],
             "maxResults": 25,
         })))
-        .respond_with(ResponseTemplate::new(200).set_body_json(search_jql_response(
-            (0..25)
-                .map(|i| serde_json::json!({ "id": i.to_string(), "key": format!("PROJ-{i}") }))
-                .collect(),
-            Some("cursor-after-25"),
-            false,
-        )))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(search_jql_response(
+                (0..25)
+                    .map(|i| serde_json::json!({ "id": i.to_string(), "key": format!("PROJ-{i}") }))
+                    .collect(),
+                Some("cursor-after-25"),
+                false,
+            )),
+        )
         .expect(1)
         .mount(&server)
         .await;
@@ -342,14 +332,12 @@ async fn search_v2_uses_classic_endpoint_with_start_at() {
     Mock::given(method("GET"))
         .and(path("/rest/api/2/search"))
         .and(query_param("startAt", "25"))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "issues": [],
-                "total": 0,
-                "startAt": 25,
-                "maxResults": 25,
-            })),
-        )
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "issues": [],
+            "total": 0,
+            "startAt": 25,
+            "maxResults": 25,
+        })))
         .expect(1)
         .mount(&server)
         .await;
@@ -2044,11 +2032,7 @@ async fn issues_list_all_fetches_multiple_pages() {
         Some("cursor-page-2"),
         false,
     );
-    let page2 = search_jql_response(
-        vec![issue_fixture("PROJ-2", "Issue 2", "Open")],
-        None,
-        true,
-    );
+    let page2 = search_jql_response(vec![issue_fixture("PROJ-2", "Issue 2", "Open")], None, true);
 
     // Second request carries the cursor. Mount it first so it takes priority
     // when both matchers match.
@@ -2088,11 +2072,7 @@ async fn search_all_fetches_multiple_pages() {
         Some("cursor-page-2"),
         false,
     );
-    let page2 = search_jql_response(
-        vec![issue_fixture("PROJ-2", "Issue 2", "Open")],
-        None,
-        true,
-    );
+    let page2 = search_jql_response(vec![issue_fixture("PROJ-2", "Issue 2", "Open")], None, true);
 
     // Second request (mounted first so its more-specific matcher wins).
     Mock::given(method("POST"))
@@ -3215,14 +3195,16 @@ async fn search_run_shows_pagination_info_when_more_results() {
     // on the new Cloud endpoint.
     Mock::given(method("POST"))
         .and(path("/rest/api/3/search/jql"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(search_jql_response(
-            vec![
-                issue_fixture("PROJ-1", "First", "To Do"),
-                issue_fixture("PROJ-2", "Second", "Open"),
-            ],
-            Some("next-cursor"),
-            false,
-        )))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(search_jql_response(
+                vec![
+                    issue_fixture("PROJ-1", "First", "To Do"),
+                    issue_fixture("PROJ-2", "Second", "Open"),
+                ],
+                Some("next-cursor"),
+                false,
+            )),
+        )
         .mount(&server)
         .await;
 
