@@ -28,6 +28,15 @@ const SEARCH_FIELDS: [&str; 7] = [
 ];
 const SEARCH_GET_JQL_LIMIT: usize = 1500;
 
+/// Max issues per page the Jira Cloud `/search/jql` endpoint will return when
+/// any non-ID fields are requested. The server silently caps larger values,
+/// so we paginate internally to fulfil larger caller-requested limits.
+const SEARCH_JQL_MAX_PAGE: usize = 100;
+
+/// Page size used when walking the cursor forward to simulate an offset on
+/// Jira Cloud. Requests only `id` to stay cheap (allows up to 5000/page).
+const SEARCH_JQL_SKIP_PAGE: usize = 1000;
+
 impl JiraClient {
     pub fn new(
         host: &str,
@@ -184,7 +193,29 @@ impl JiraClient {
     // ── Issues ────────────────────────────────────────────────────────────────
 
     /// Search issues using JQL.
+    ///
+    /// On API v2 (Jira Data Center / Server) this uses the classic
+    /// `/rest/api/2/search` endpoint with offset-based pagination.
+    ///
+    /// On API v3 (Jira Cloud) this uses the replacement
+    /// `/rest/api/3/search/jql` endpoint — the original `/search` was retired
+    /// on 2025-10-31 and returns 410 Gone. The new endpoint only supports
+    /// cursor-based pagination and does not return an exact total, so we
+    /// simulate the `start_at` offset by walking the cursor forward.
     pub async fn search(
+        &self,
+        jql: &str,
+        max_results: usize,
+        start_at: usize,
+    ) -> Result<SearchResponse, ApiError> {
+        if self.api_version >= 3 {
+            self.search_jql_v3(jql, max_results, start_at).await
+        } else {
+            self.search_v2(jql, max_results, start_at).await
+        }
+    }
+
+    async fn search_v2(
         &self,
         jql: &str,
         max_results: usize,
@@ -192,11 +223,21 @@ impl JiraClient {
     ) -> Result<SearchResponse, ApiError> {
         let fields = SEARCH_FIELDS.join(",");
         let encoded_jql = percent_encode(jql);
-        if encoded_jql.len() <= SEARCH_GET_JQL_LIMIT {
+        #[derive(serde::Deserialize)]
+        struct RawV2 {
+            issues: Vec<Issue>,
+            #[serde(default)]
+            total: usize,
+            #[serde(rename = "startAt", default)]
+            start_at: usize,
+            #[serde(rename = "maxResults", default)]
+            max_results: usize,
+        }
+        let raw: RawV2 = if encoded_jql.len() <= SEARCH_GET_JQL_LIMIT {
             let path = format!(
                 "search?jql={encoded_jql}&maxResults={max_results}&startAt={start_at}&fields={fields}"
             );
-            self.get(&path).await
+            self.get(&path).await?
         } else {
             self.post(
                 "search",
@@ -207,8 +248,126 @@ impl JiraClient {
                     "fields": SEARCH_FIELDS,
                 }),
             )
-            .await
+            .await?
+        };
+        let is_last = raw.start_at + raw.issues.len() >= raw.total;
+        Ok(SearchResponse {
+            issues: raw.issues,
+            total: Some(raw.total),
+            start_at: raw.start_at,
+            max_results: raw.max_results,
+            is_last,
+        })
+    }
+
+    /// Fetch a single page from the Jira Cloud `/search/jql` endpoint with
+    /// the full field list populated on each issue.
+    ///
+    /// Always uses POST: it handles long JQL without URL-length limits and
+    /// accepts `fields` as a JSON array (GET requires repeated query params).
+    async fn search_jql_page(
+        &self,
+        jql: &str,
+        page_size: usize,
+        next_token: Option<&str>,
+    ) -> Result<SearchJqlPage, ApiError> {
+        let mut body = serde_json::json!({
+            "jql": jql,
+            "maxResults": page_size,
+            "fields": SEARCH_FIELDS,
+        });
+        if let Some(t) = next_token {
+            body["nextPageToken"] = serde_json::Value::String(t.to_string());
         }
+        self.post("search/jql", &body).await
+    }
+
+    /// Fetch a `/search/jql` page requesting only the `id` field.
+    ///
+    /// Used to cheaply walk the cursor forward when simulating an offset.
+    /// Issues in the response lack a `fields` sub-object, so they are
+    /// deserialized as raw JSON values rather than full `Issue`s.
+    async fn search_jql_skip_page(
+        &self,
+        jql: &str,
+        page_size: usize,
+        next_token: Option<&str>,
+    ) -> Result<SearchJqlSkipPage, ApiError> {
+        let mut body = serde_json::json!({
+            "jql": jql,
+            "maxResults": page_size,
+            "fields": ["id"],
+        });
+        if let Some(t) = next_token {
+            body["nextPageToken"] = serde_json::Value::String(t.to_string());
+        }
+        self.post("search/jql", &body).await
+    }
+
+    async fn search_jql_v3(
+        &self,
+        jql: &str,
+        max_results: usize,
+        start_at: usize,
+    ) -> Result<SearchResponse, ApiError> {
+        // Walk the cursor forward to simulate `start_at`. The `/search/jql`
+        // endpoint only supports sequential cursor pagination, so arbitrary
+        // offsets require fetching and discarding earlier pages. Request
+        // `id`-only to keep skip-pages cheap.
+        let mut next_token: Option<String> = None;
+        let mut skipped = 0usize;
+        while skipped < start_at {
+            let want = (start_at - skipped).min(SEARCH_JQL_SKIP_PAGE);
+            let page = self
+                .search_jql_skip_page(jql, want, next_token.as_deref())
+                .await?;
+            let got = page.issues.len();
+            skipped += got;
+            if got == 0 || page.is_last {
+                // Offset is past the end of the result set.
+                return Ok(SearchResponse {
+                    issues: Vec::new(),
+                    total: Some(skipped),
+                    start_at,
+                    max_results: 0,
+                    is_last: true,
+                });
+            }
+            next_token = page.next_page_token;
+        }
+
+        // Collect up to `max_results` issues, paging internally to honour
+        // the server's per-page cap when fields are requested.
+        let mut collected: Vec<Issue> = Vec::new();
+        let mut is_last = false;
+        while collected.len() < max_results {
+            let remaining = max_results - collected.len();
+            let want = remaining.min(SEARCH_JQL_MAX_PAGE);
+            let page = self
+                .search_jql_page(jql, want, next_token.as_deref())
+                .await?;
+            let got = page.issues.len();
+            collected.extend(page.issues);
+            if page.is_last || got == 0 {
+                is_last = true;
+                break;
+            }
+            next_token = page.next_page_token;
+            if next_token.is_none() {
+                is_last = true;
+                break;
+            }
+        }
+
+        let returned = collected.len();
+        Ok(SearchResponse {
+            issues: collected,
+            // Cloud `/search/jql` does not return an exact total.
+            total: None,
+            start_at,
+            max_results: returned,
+            is_last,
+        })
     }
 
     /// Fetch a single issue by key (e.g. `PROJ-123`), including all comments.

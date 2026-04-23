@@ -39,9 +39,13 @@ pub async fn run(
     let resp = client.search(jql, limit, offset).await?;
 
     if out.json {
+        let total_json: serde_json::Value = match resp.total {
+            Some(n) => serde_json::json!(n),
+            None => serde_json::Value::Null,
+        };
         out.print_data(
             &serde_json::to_string_pretty(&serde_json::json!({
-                "total": resp.total,
+                "total": total_json,
                 "startAt": resp.start_at,
                 "maxResults": resp.max_results,
                 "issues": resp.issues.iter().map(|i| issue_to_json(i, client)).collect::<Vec<_>>(),
@@ -50,13 +54,20 @@ pub async fn run(
         );
     } else {
         render_issue_table(&resp.issues, out);
-        if resp.total > resp.start_at + resp.issues.len() {
-            out.print_message(&format!(
-                "Showing {}-{} of {} issues — use --limit/--offset or --all to paginate",
-                resp.start_at + 1,
-                resp.start_at + resp.issues.len(),
-                resp.total
-            ));
+        if !resp.is_last {
+            match resp.total {
+                Some(n) => out.print_message(&format!(
+                    "Showing {}-{} of {} issues — use --limit/--offset or --all to paginate",
+                    resp.start_at + 1,
+                    resp.start_at + resp.issues.len(),
+                    n
+                )),
+                None => out.print_message(&format!(
+                    "Showing {}-{} issues (more available) — use --limit/--offset or --all to paginate",
+                    resp.start_at + 1,
+                    resp.start_at + resp.issues.len()
+                )),
+            }
         } else {
             out.print_message(&format!("{} issues", resp.issues.len()));
         }
