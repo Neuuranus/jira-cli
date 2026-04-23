@@ -16,6 +16,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 
 
+
+## [0.3.10](https://github.com/rvben/jira-cli/compare/v0.3.9...v0.3.10) - 2026-04-23
+
+### Fixed
+
+- **search**: harden v3 cursor walk and clean up search path ([3643291](https://github.com/rvben/jira-cli/commit/36432911a899cc9fe86efdd75e98a180a3d402cb))
+- migrate Jira Cloud search to /rest/api/3/search/jql ([c858fa2](https://github.com/rvben/jira-cli/commit/c858fa251b437e274568680047adb584a8eacf34))
+
 ## [0.3.9](https://github.com/rvben/jira-cli/compare/v0.3.8...v0.3.9) - 2026-04-08
 
 ### Added
