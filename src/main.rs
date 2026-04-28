@@ -266,6 +266,10 @@ enum IssuesCommand {
         #[arg(long)]
         components: Vec<String>,
 
+        /// Fix versions to set (can be specified multiple times)
+        #[arg(long = "fix-version")]
+        fix_versions: Vec<String>,
+
         /// Assign to this account ID (use "me" for yourself)
         #[arg(long)]
         assignee: Option<String>,
@@ -643,6 +647,7 @@ async fn run(cli: Cli, out: OutputConfig) -> Result<(), Box<dyn std::error::Erro
                 priority,
                 labels,
                 components,
+                fix_versions,
                 assignee,
                 sprint,
                 parent,
@@ -650,6 +655,7 @@ async fn run(cli: Cli, out: OutputConfig) -> Result<(), Box<dyn std::error::Erro
             } => {
                 let parsed_labels = vec_to_opt_refs(&labels);
                 let parsed_components = vec_to_opt_refs(&components);
+                let parsed_fix_versions = vec_to_opt_refs(&fix_versions);
                 let assignee_str = match assignee.as_deref() {
                     Some("me") => {
                         let me = client.get_myself().await?;
@@ -666,7 +672,7 @@ async fn run(cli: Cli, out: OutputConfig) -> Result<(), Box<dyn std::error::Erro
                     priority: priority.as_deref(),
                     labels: parsed_labels.as_deref(),
                     components: parsed_components.as_deref(),
-                    fix_versions: None,
+                    fix_versions: parsed_fix_versions.as_deref(),
                     assignee: assignee_str.as_deref(),
                     parent: parent.as_deref(),
                 };

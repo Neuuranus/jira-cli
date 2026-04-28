@@ -446,6 +446,15 @@ impl JiraClient {
                 .collect();
             fields["components"] = serde_json::Value::Array(payload);
         }
+        if let Some(fvs) = draft.fix_versions
+            && !fvs.is_empty()
+        {
+            let payload: Vec<serde_json::Value> = fvs
+                .iter()
+                .map(|name| serde_json::json!({ "name": name }))
+                .collect();
+            fields["fixVersions"] = serde_json::Value::Array(payload);
+        }
         if let Some(id) = draft.assignee {
             fields["assignee"] = self.assignee_payload(id);
         }

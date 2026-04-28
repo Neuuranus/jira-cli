@@ -3746,3 +3746,48 @@ async fn list_components_handles_empty_array() {
     let comps = client.list_components("EMPTY").await.unwrap();
     assert!(comps.is_empty());
 }
+
+#[tokio::test]
+async fn create_issue_sends_fix_versions() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("POST"))
+        .and(path("/rest/api/3/issue"))
+        .and(body_partial_json(serde_json::json!({
+            "fields": {
+                "project": { "key": "PROJ" },
+                "issuetype": { "name": "Bug" },
+                "summary": "Has fix versions",
+                "fixVersions": [{ "name": "1.2.0" }, { "name": "1.3.0" }],
+            }
+        })))
+        .respond_with(ResponseTemplate::new(201).set_body_json(serde_json::json!({
+            "id": "10001",
+            "key": "PROJ-42",
+            "self": "https://test.atlassian.net/rest/api/3/issue/10001",
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = test_client(&server);
+    let resp = client
+        .create_issue(
+            &IssueDraft {
+                project_key: "PROJ",
+                issue_type: "Bug",
+                summary: "Has fix versions",
+                description: None,
+                priority: None,
+                labels: None,
+                components: None,
+                fix_versions: Some(&["1.2.0", "1.3.0"]),
+                assignee: None,
+                parent: None,
+            },
+            &[],
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.key, "PROJ-42");
+}
