@@ -524,6 +524,50 @@ async fn show_issue_json_includes_components() {
 }
 
 #[tokio::test]
+async fn show_issue_json_includes_fix_versions() {
+    let server = MockServer::start().await;
+    let mut fixture = issue_fixture("PROJ-1", "Test", "Open");
+    fixture["fields"]["fixVersions"] = serde_json::json!([
+        {"id": "10010", "name": "1.2.0", "released": true, "archived": false, "releaseDate": "2024-03-01"},
+    ]);
+    fixture["fields"]["versions"] = serde_json::json!([
+        {"id": "10005", "name": "1.1.0", "released": true, "archived": false},
+    ]);
+
+    Mock::given(method("GET"))
+        .and(path("/rest/api/3/issue/PROJ-1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(fixture))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = test_client(&server);
+    let issue = client.get_issue("PROJ-1").await.unwrap();
+
+    // Exercise the actual `issue_detail_to_json` mapping that `commands::issues::show`
+    // calls when `--json` is set. This guards the rendered JSON shape, not just the
+    // raw deserialization.
+    let json = jira_cli::commands::issues::issue_detail_to_json(&issue, &client);
+
+    let fvs = json["fixVersions"]
+        .as_array()
+        .expect("fixVersions array present");
+    assert_eq!(fvs.len(), 1);
+    assert_eq!(fvs[0]["name"], "1.2.0");
+    assert_eq!(fvs[0]["id"], "10010");
+    assert_eq!(fvs[0]["released"], true);
+    assert_eq!(fvs[0]["archived"], false);
+    assert_eq!(fvs[0]["releaseDate"], "2024-03-01");
+
+    let avs = json["affectedVersions"]
+        .as_array()
+        .expect("affectedVersions array present");
+    assert_eq!(avs.len(), 1);
+    assert_eq!(avs[0]["name"], "1.1.0");
+    assert_eq!(avs[0]["released"], true);
+}
+
+#[tokio::test]
 async fn show_issue_extracts_adf_description() {
     let server = MockServer::start().await;
 

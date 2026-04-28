@@ -737,98 +737,122 @@ pub(crate) fn render_issue_table(issues: &[Issue], out: &OutputConfig) {
     }
 }
 
-fn render_issue_detail(issue: &Issue) {
+pub(crate) fn render_issue_detail(issue: &Issue) {
+    let mut stdout = std::io::stdout().lock();
+    write_issue_detail(&mut stdout, issue).expect("stdout write");
+}
+
+pub(crate) fn write_issue_detail<W: std::io::Write>(
+    out: &mut W,
+    issue: &Issue,
+) -> std::io::Result<()> {
     let color = use_color();
     let key = if color {
         issue.key.yellow().bold().to_string()
     } else {
         issue.key.clone()
     };
-    println!("{key}  {}", issue.summary());
-    println!();
-    println!("  Type:       {}", issue.issue_type());
+    writeln!(out, "{key}  {}", issue.summary())?;
+    writeln!(out)?;
+    writeln!(out, "  Type:       {}", issue.issue_type())?;
     let status_str = if color {
         colorize_status(issue.status(), issue.status())
     } else {
         issue.status().to_string()
     };
-    println!("  Status:     {status_str}");
-    println!("  Priority:   {}", issue.priority());
-    println!("  Assignee:   {}", issue.assignee());
+    writeln!(out, "  Status:     {status_str}")?;
+    writeln!(out, "  Priority:   {}", issue.priority())?;
+    writeln!(out, "  Assignee:   {}", issue.assignee())?;
     if let Some(ref reporter) = issue.fields.reporter {
-        println!("  Reporter:   {}", reporter.display_name);
+        writeln!(out, "  Reporter:   {}", reporter.display_name)?;
     }
     if let Some(ref labels) = issue.fields.labels
         && !labels.is_empty()
     {
-        println!("  Labels:     {}", labels.join(", "));
+        writeln!(out, "  Labels:     {}", labels.join(", "))?;
     }
     if let Some(ref components) = issue.fields.components
         && !components.is_empty()
     {
         let names: Vec<&str> = components.iter().map(|c| c.name.as_str()).collect();
-        println!("  Components: {}", names.join(", "));
+        writeln!(out, "  Components: {}", names.join(", "))?;
+    }
+    if let Some(ref fix_versions) = issue.fields.fix_versions
+        && !fix_versions.is_empty()
+    {
+        let names: Vec<&str> = fix_versions.iter().map(|v| v.name.as_str()).collect();
+        writeln!(out, "  Fix Versions:    {}", names.join(", "))?;
+    }
+    if let Some(ref versions) = issue.fields.versions
+        && !versions.is_empty()
+    {
+        let names: Vec<&str> = versions.iter().map(|v| v.name.as_str()).collect();
+        writeln!(out, "  Affects Versions:{}", names.join(", "))?;
     }
     if let Some(ref created) = issue.fields.created {
-        println!("  Created:    {}", format_date(created));
+        writeln!(out, "  Created:    {}", format_date(created))?;
     }
     if let Some(ref updated) = issue.fields.updated {
-        println!("  Updated:    {}", format_date(updated));
+        writeln!(out, "  Updated:    {}", format_date(updated))?;
     }
 
     let desc = issue.description_text();
     if !desc.is_empty() {
-        println!();
-        println!("Description:");
+        writeln!(out)?;
+        writeln!(out, "Description:")?;
         for line in desc.lines() {
-            println!("  {line}");
+            writeln!(out, "  {line}")?;
         }
     }
 
     if let Some(ref links) = issue.fields.issue_links
         && !links.is_empty()
     {
-        println!();
-        println!("Links:");
+        writeln!(out)?;
+        writeln!(out, "Links:")?;
         for link in links {
-            render_issue_link(link);
+            write_issue_link(out, link)?;
         }
     }
 
     if let Some(ref comment_list) = issue.fields.comment
         && !comment_list.comments.is_empty()
     {
-        println!();
-        println!("Comments ({}):", comment_list.total);
+        writeln!(out)?;
+        writeln!(out, "Comments ({}):", comment_list.total)?;
         for c in &comment_list.comments {
-            println!();
+            writeln!(out)?;
             let author = if color {
                 c.author.display_name.bold().to_string()
             } else {
                 c.author.display_name.clone()
             };
-            println!("  {} — {}", author, format_date(&c.created));
+            writeln!(out, "  {} — {}", author, format_date(&c.created))?;
             let body = c.body_text();
             for line in body.lines() {
-                println!("    {line}");
+                writeln!(out, "    {line}")?;
             }
         }
     }
+    Ok(())
 }
 
-fn render_issue_link(link: &IssueLink) {
+fn write_issue_link<W: std::io::Write>(out: &mut W, link: &IssueLink) -> std::io::Result<()> {
     if let Some(ref out_issue) = link.outward_issue {
-        println!(
+        writeln!(
+            out,
             "  [{}] {} {} — {}",
             link.id, link.link_type.outward, out_issue.key, out_issue.fields.summary
-        );
+        )?;
     }
     if let Some(ref in_issue) = link.inward_issue {
-        println!(
+        writeln!(
+            out,
             "  [{}] {} {} — {}",
             link.id, link.link_type.inward, in_issue.key, in_issue.fields.summary
-        );
+        )?;
     }
+    Ok(())
 }
 
 // ── JSON serialization ────────────────────────────────────────────────────────
@@ -851,7 +875,7 @@ pub(crate) fn issue_to_json(issue: &Issue, client: &JiraClient) -> serde_json::V
     })
 }
 
-fn issue_detail_to_json(issue: &Issue, client: &JiraClient) -> serde_json::Value {
+pub fn issue_detail_to_json(issue: &Issue, client: &JiraClient) -> serde_json::Value {
     let comments: Vec<serde_json::Value> = issue
         .fields
         .comment
@@ -930,6 +954,26 @@ fn issue_detail_to_json(issue: &Issue, client: &JiraClient) -> serde_json::Value
         })),
         "labels": issue.fields.labels,
         "components": issue.fields.components,
+        "fixVersions": issue.fields.fix_versions.as_ref().map(|fvs| {
+            fvs.iter().map(|v| serde_json::json!({
+                "id": v.id,
+                "name": v.name,
+                "description": v.description,
+                "released": v.released,
+                "archived": v.archived,
+                "releaseDate": v.release_date,
+            })).collect::<Vec<_>>()
+        }),
+        "affectedVersions": issue.fields.versions.as_ref().map(|vs| {
+            vs.iter().map(|v| serde_json::json!({
+                "id": v.id,
+                "name": v.name,
+                "description": v.description,
+                "released": v.released,
+                "archived": v.archived,
+                "releaseDate": v.release_date,
+            })).collect::<Vec<_>>()
+        }),
         "description": issue.description_text(),
         "created": issue.fields.created,
         "updated": issue.fields.updated,
@@ -1088,6 +1132,85 @@ fn resolve_terminal_width(tty_width: Option<usize>, columns: Option<usize>) -> u
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::api::types::{IssueFields, IssueTypeField, StatusField, Version};
+
+    fn issue_fixture(fix: Option<Vec<Version>>, aff: Option<Vec<Version>>) -> Issue {
+        Issue {
+            id: "10001".into(),
+            key: "PROJ-1".into(),
+            url: None,
+            fields: IssueFields {
+                summary: "Test".into(),
+                status: StatusField {
+                    name: "Open".into(),
+                },
+                assignee: None,
+                reporter: None,
+                priority: None,
+                issuetype: IssueTypeField { name: "Bug".into() },
+                description: None,
+                labels: None,
+                components: None,
+                fix_versions: fix,
+                versions: aff,
+                created: None,
+                updated: None,
+                comment: None,
+                issue_links: None,
+            },
+        }
+    }
+
+    fn ver(id: &str, name: &str) -> Version {
+        Version {
+            id: id.into(),
+            name: name.into(),
+            description: None,
+            released: None,
+            archived: None,
+            release_date: None,
+        }
+    }
+
+    #[test]
+    fn write_issue_detail_renders_fix_versions_line() {
+        let issue = issue_fixture(Some(vec![ver("1", "1.2.0"), ver("2", "1.3.0")]), None);
+        let mut buf = Vec::new();
+        write_issue_detail(&mut buf, &issue).unwrap();
+        let out = String::from_utf8(buf).unwrap();
+        assert!(
+            out.contains("  Fix Versions:    1.2.0, 1.3.0"),
+            "expected rendered fix-versions line, got:\n{out}"
+        );
+    }
+
+    #[test]
+    fn write_issue_detail_renders_affects_versions_line() {
+        let issue = issue_fixture(None, Some(vec![ver("5", "1.1.0")]));
+        let mut buf = Vec::new();
+        write_issue_detail(&mut buf, &issue).unwrap();
+        let out = String::from_utf8(buf).unwrap();
+        assert!(
+            out.contains("  Affects Versions:1.1.0"),
+            "expected affects-versions line, got:\n{out}"
+        );
+    }
+
+    #[test]
+    fn write_issue_detail_omits_version_lines_when_empty() {
+        let issue = issue_fixture(Some(vec![]), None);
+        let mut buf = Vec::new();
+        write_issue_detail(&mut buf, &issue).unwrap();
+        let out = String::from_utf8(buf).unwrap();
+        assert!(
+            !out.contains("Fix Versions:"),
+            "should omit fix versions header for empty slice, got:\n{out}"
+        );
+        assert!(
+            !out.contains("Affects Versions:"),
+            "should omit affects versions header when None, got:\n{out}"
+        );
+    }
 
     #[test]
     fn truncate_short_string() {

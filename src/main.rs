@@ -837,7 +837,10 @@ fn schema_json() -> serde_json::Value {
             "summary": "...", "status": "In Progress", "type": "Bug", "priority": "High",
             "assignee": { "displayName": "Alice", "accountId": "abc123" },
             "reporter": { "displayName": "Bob", "accountId": "xyz" },
-            "labels": ["backend"], "components": [{ "id": "10010", "name": "Backend", "description": "Server-side" }], "description": "...",
+            "labels": ["backend"], "components": [{ "id": "10010", "name": "Backend", "description": "Server-side" }],
+            "fixVersions": [{ "id": "10010", "name": "1.2.0", "description": "...", "released": true, "archived": false, "releaseDate": "2024-03-01" }],
+            "affectedVersions": [{ "id": "10005", "name": "1.1.0", "description": "...", "released": true, "archived": false, "releaseDate": "2024-02-01" }],
+            "description": "...",
             "created": "2024-01-01", "updated": "2024-01-02",
             "comments": "[{ id, author: { displayName, accountId }, body, created, updated }]",
             "issueLinks": "[{ id, sentence, type: { name, inward, outward }, outwardIssue, inwardIssue }]"
