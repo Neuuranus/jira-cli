@@ -1,6 +1,6 @@
 use owo_colors::OwoColorize;
 
-use crate::api::{ApiError, Issue, IssueLink, JiraClient, escape_jql};
+use crate::api::{ApiError, Issue, IssueDraft, IssueLink, IssueUpdate, JiraClient, escape_jql};
 use crate::output::{OutputConfig, use_color};
 
 /// Filter set shared by `issues list` and `issues mine`.
@@ -208,40 +208,18 @@ pub async fn show(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
 pub async fn create(
     client: &JiraClient,
     out: &OutputConfig,
-    project: &str,
-    issue_type: &str,
-    summary: &str,
-    description: Option<&str>,
-    priority: Option<&str>,
-    labels: Option<&[&str]>,
-    components: Option<&[&str]>,
-    assignee: Option<&str>,
+    draft: &IssueDraft<'_>,
     sprint: Option<&str>,
-    parent: Option<&str>,
     custom_fields: &[(String, serde_json::Value)],
 ) -> Result<(), ApiError> {
-    let resp = client
-        .create_issue(
-            project,
-            issue_type,
-            summary,
-            description,
-            priority,
-            labels,
-            components,
-            assignee,
-            parent,
-            custom_fields,
-        )
-        .await?;
+    let resp = client.create_issue(draft, custom_fields).await?;
     let url = client.browse_url(&resp.key);
 
     let mut result = serde_json::json!({ "key": resp.key, "id": resp.id, "url": url });
-    if let Some(p) = parent {
+    if let Some(p) = draft.parent {
         result["parent"] = serde_json::json!(p);
     }
     if let Some(s) = sprint {
@@ -254,27 +232,14 @@ pub async fn create(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
 pub async fn update(
     client: &JiraClient,
     out: &OutputConfig,
     key: &str,
-    summary: Option<&str>,
-    description: Option<&str>,
-    priority: Option<&str>,
-    components: Option<&[&str]>,
+    update: &IssueUpdate<'_>,
     custom_fields: &[(String, serde_json::Value)],
 ) -> Result<(), ApiError> {
-    client
-        .update_issue(
-            key,
-            summary,
-            description,
-            priority,
-            components,
-            custom_fields,
-        )
-        .await?;
+    client.update_issue(key, update, custom_fields).await?;
     out.print_result(
         &serde_json::json!({ "key": key, "updated": true }),
         &format!("Updated {key}"),

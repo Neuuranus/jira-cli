@@ -3,8 +3,30 @@ use wiremock::matchers::{
 };
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
-use jira_cli::api::{ApiError, AuthType, JiraClient};
+use jira_cli::api::{ApiError, AuthType, IssueDraft, IssueUpdate, JiraClient};
 use jira_cli::output::OutputConfig;
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+/// Construct a minimal IssueDraft with only the required fields set.
+/// All optional fields default to None.
+fn minimal_draft<'a>(
+    project_key: &'a str,
+    issue_type: &'a str,
+    summary: &'a str,
+) -> IssueDraft<'a> {
+    IssueDraft {
+        project_key,
+        issue_type,
+        summary,
+        description: None,
+        priority: None,
+        labels: None,
+        components: None,
+        assignee: None,
+        parent: None,
+    }
+}
 
 // ── Fixtures ──────────────────────────────────────────────────────────────────
 
@@ -498,15 +520,17 @@ async fn create_issue_posts_correct_payload() {
     let client = test_client(&server);
     let resp = client
         .create_issue(
-            "PROJ",
-            "Bug",
-            "Something broke",
-            Some("Details here"),
-            None,
-            None,
-            None,
-            None,
-            None,
+            &IssueDraft {
+                project_key: "PROJ",
+                issue_type: "Bug",
+                summary: "Something broke",
+                description: Some("Details here"),
+                priority: None,
+                labels: None,
+                components: None,
+                assignee: None,
+                parent: None,
+            },
             &[],
         )
         .await
@@ -993,7 +1017,14 @@ async fn update_issue_sends_components() {
 
     let client = test_client(&server);
     client
-        .update_issue("PROJ-1", None, None, None, Some(&["Backend"]), &[])
+        .update_issue(
+            "PROJ-1",
+            &IssueUpdate {
+                components: Some(&["Backend"]),
+                ..Default::default()
+            },
+            &[],
+        )
         .await
         .unwrap();
 }
@@ -1014,7 +1045,14 @@ async fn update_issue_components_empty_clears_field() {
 
     let client = test_client(&server);
     client
-        .update_issue("PROJ-1", None, None, None, Some(&[]), &[])
+        .update_issue(
+            "PROJ-1",
+            &IssueUpdate {
+                components: Some(&[]),
+                ..Default::default()
+            },
+            &[],
+        )
         .await
         .unwrap();
 }
@@ -1032,7 +1070,14 @@ async fn update_issue_sends_put_request() {
 
     let client = test_client(&server);
     client
-        .update_issue("PROJ-1", Some("New summary"), None, None, None, &[])
+        .update_issue(
+            "PROJ-1",
+            &IssueUpdate {
+                summary: Some("New summary"),
+                ..Default::default()
+            },
+            &[],
+        )
         .await
         .unwrap();
 
@@ -1056,7 +1101,7 @@ async fn update_issue_requires_at_least_one_field() {
     let client = test_client(&server);
 
     let err = client
-        .update_issue("PROJ-1", None, None, None, None, &[])
+        .update_issue("PROJ-1", &IssueUpdate::default(), &[])
         .await
         .unwrap_err();
     assert!(matches!(err, ApiError::InvalidInput(_)));
@@ -1681,9 +1726,7 @@ async fn create_issue_sends_custom_fields() {
         ("customfield_10014".to_string(), serde_json::json!("PROJ-1")),
     ];
     client
-        .create_issue(
-            "PROJ", "Story", "My story", None, None, None, None, None, None, &custom,
-        )
+        .create_issue(&minimal_draft("PROJ", "Story", "My story"), &custom)
         .await
         .unwrap();
 
@@ -1706,7 +1749,7 @@ async fn update_issue_sends_custom_fields() {
 
     let custom = vec![("customfield_10106".to_string(), serde_json::json!(13))];
     client
-        .update_issue("PROJ-1", None, None, None, None, &custom)
+        .update_issue("PROJ-1", &IssueUpdate::default(), &custom)
         .await
         .unwrap();
 
@@ -1837,15 +1880,17 @@ async fn create_issue_v2_assignee_uses_name_field() {
 
     client
         .create_issue(
-            "PROJ",
-            "Task",
-            "My task",
-            None,
-            None,
-            None,
-            None,
-            Some("ruben"),
-            None,
+            &IssueDraft {
+                project_key: "PROJ",
+                issue_type: "Task",
+                summary: "My task",
+                description: None,
+                priority: None,
+                labels: None,
+                components: None,
+                assignee: Some("ruben"),
+                parent: None,
+            },
             &[],
         )
         .await
@@ -1876,15 +1921,17 @@ async fn create_issue_v3_assignee_uses_account_id_field() {
 
     client
         .create_issue(
-            "PROJ",
-            "Task",
-            "My task",
-            None,
-            None,
-            None,
-            None,
-            Some("abc123"),
-            None,
+            &IssueDraft {
+                project_key: "PROJ",
+                issue_type: "Task",
+                summary: "My task",
+                description: None,
+                priority: None,
+                labels: None,
+                components: None,
+                assignee: Some("abc123"),
+                parent: None,
+            },
             &[],
         )
         .await
@@ -2498,16 +2545,18 @@ async fn create_issue_with_parent_includes_parent_field() {
     jira_cli::commands::issues::create(
         &client,
         &out,
-        "PROJ",
-        "Subtask",
-        "Do a sub-thing",
+        &IssueDraft {
+            project_key: "PROJ",
+            issue_type: "Subtask",
+            summary: "Do a sub-thing",
+            description: None,
+            priority: None,
+            labels: None,
+            components: None,
+            assignee: None,
+            parent: Some("PROJ-5"),
+        },
         None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        Some("PROJ-5"),
         &[],
     )
     .await
@@ -3423,18 +3472,7 @@ async fn create_issue_422_returns_api_error_with_status() {
 
     let client = test_client(&server);
     let err = client
-        .create_issue(
-            "PROJ",
-            "Task",
-            "bad issue",
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            &[],
-        )
+        .create_issue(&minimal_draft("PROJ", "Task", "bad issue"), &[])
         .await
         .unwrap_err();
     assert!(
@@ -3564,15 +3602,17 @@ async fn create_issue_sends_components() {
     let client = test_client(&server);
     let resp = client
         .create_issue(
-            "PROJ",
-            "Bug",
-            "Has components",
-            None,
-            None,
-            None,
-            Some(&["Backend", "API"]),
-            None,
-            None,
+            &IssueDraft {
+                project_key: "PROJ",
+                issue_type: "Bug",
+                summary: "Has components",
+                description: None,
+                priority: None,
+                labels: None,
+                components: Some(&["Backend", "API"]),
+                assignee: None,
+                parent: None,
+            },
             &[],
         )
         .await

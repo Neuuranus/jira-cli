@@ -1,6 +1,6 @@
 #![recursion_limit = "256"]
 
-use jira_cli::api::{ApiError, JiraClient};
+use jira_cli::api::{ApiError, IssueDraft, IssueUpdate, JiraClient};
 use jira_cli::commands;
 use jira_cli::config::Config;
 use jira_cli::output::{OutputConfig, exit_code_for_error};
@@ -649,9 +649,7 @@ async fn run(cli: Cli, out: OutputConfig) -> Result<(), Box<dyn std::error::Erro
                 field,
             } => {
                 let parsed_labels = vec_to_opt_refs(&labels);
-                let labels_opt: Option<&[&str]> = parsed_labels.as_deref();
                 let parsed_components = vec_to_opt_refs(&components);
-                let components_opt: Option<&[&str]> = parsed_components.as_deref();
                 let assignee_str = match assignee.as_deref() {
                     Some("me") => {
                         let me = client.get_myself().await?;
@@ -660,22 +658,18 @@ async fn run(cli: Cli, out: OutputConfig) -> Result<(), Box<dyn std::error::Erro
                     Some(id) => Some(id.to_string()),
                     None => None,
                 };
-                commands::issues::create(
-                    &client,
-                    &out,
-                    &project,
-                    &issue_type,
-                    &summary,
-                    description.as_deref(),
-                    priority.as_deref(),
-                    labels_opt,
-                    components_opt,
-                    assignee_str.as_deref(),
-                    sprint.as_deref(),
-                    parent.as_deref(),
-                    &field,
-                )
-                .await?
+                let draft = IssueDraft {
+                    project_key: &project,
+                    issue_type: &issue_type,
+                    summary: &summary,
+                    description: description.as_deref(),
+                    priority: priority.as_deref(),
+                    labels: parsed_labels.as_deref(),
+                    components: parsed_components.as_deref(),
+                    assignee: assignee_str.as_deref(),
+                    parent: parent.as_deref(),
+                };
+                commands::issues::create(&client, &out, &draft, sprint.as_deref(), &field).await?
             }
             IssuesCommand::Update {
                 key,
@@ -688,18 +682,13 @@ async fn run(cli: Cli, out: OutputConfig) -> Result<(), Box<dyn std::error::Erro
                 // `--components none` (alone) clears the field. If a real component is
                 // named "none", users can bypass the sentinel via `--field components=[...]`.
                 let parsed_components = parse_components_update_arg(&components);
-                let components_opt: Option<&[&str]> = parsed_components.as_deref();
-                commands::issues::update(
-                    &client,
-                    &out,
-                    &key,
-                    summary.as_deref(),
-                    description.as_deref(),
-                    priority.as_deref(),
-                    components_opt,
-                    &field,
-                )
-                .await?
+                let update = IssueUpdate {
+                    summary: summary.as_deref(),
+                    description: description.as_deref(),
+                    priority: priority.as_deref(),
+                    components: parsed_components.as_deref(),
+                };
+                commands::issues::update(&client, &out, &key, &update, &field).await?
             }
             IssuesCommand::Move { key, sprint } => {
                 commands::issues::move_to_sprint(&client, &out, &key, &sprint).await?

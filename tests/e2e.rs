@@ -14,7 +14,7 @@
 //! All write tests create issues tagged `[e2e-auto]` in the summary so they can
 //! be bulk-deleted after a test run if needed.
 
-use jira_cli::api::{AuthType, JiraClient};
+use jira_cli::api::{AuthType, IssueDraft, IssueUpdate, JiraClient};
 use jira_cli::output::OutputConfig;
 
 fn e2e_client() -> Option<(JiraClient, String)> {
@@ -40,6 +40,26 @@ fn json_out() -> OutputConfig {
     OutputConfig {
         json: true,
         quiet: true,
+    }
+}
+
+/// Construct a minimal IssueDraft with only the required fields set.
+/// All optional fields default to None.
+fn minimal_draft<'a>(
+    project_key: &'a str,
+    issue_type: &'a str,
+    summary: &'a str,
+) -> IssueDraft<'a> {
+    IssueDraft {
+        project_key,
+        issue_type,
+        summary,
+        description: None,
+        priority: None,
+        labels: None,
+        components: None,
+        assignee: None,
+        parent: None,
     }
 }
 
@@ -123,15 +143,17 @@ async fn e2e_create_comment_transition_show_delete() {
     // Create
     let created = client
         .create_issue(
-            &project,
-            "Task",
-            "e2e lifecycle test [e2e-auto]",
-            Some("Created by e2e test"),
-            None,
-            None,
-            None,
-            None,
-            None,
+            &IssueDraft {
+                project_key: &project,
+                issue_type: "Task",
+                summary: "e2e lifecycle test [e2e-auto]",
+                description: Some("Created by e2e test"),
+                priority: None,
+                labels: None,
+                components: None,
+                assignee: None,
+                parent: None,
+            },
             &[],
         )
         .await
@@ -191,10 +213,10 @@ async fn e2e_create_comment_transition_show_delete() {
     client
         .update_issue(
             key,
-            Some("e2e lifecycle test [e2e-auto] updated"),
-            None,
-            None,
-            None,
+            &IssueUpdate {
+                summary: Some("e2e lifecycle test [e2e-auto] updated"),
+                ..Default::default()
+            },
             &[],
         )
         .await
@@ -215,15 +237,7 @@ async fn e2e_create_subtask() {
     // Create parent
     let parent = client
         .create_issue(
-            &project,
-            "Task",
-            "e2e parent [e2e-auto]",
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
+            &minimal_draft(&project, "Task", "e2e parent [e2e-auto]"),
             &[],
         )
         .await
@@ -232,15 +246,17 @@ async fn e2e_create_subtask() {
     // Create subtask
     let child = client
         .create_issue(
-            &project,
-            "Sub-task",
-            "e2e subtask [e2e-auto]",
-            None,
-            None,
-            None,
-            None,
-            None,
-            Some(&parent.key),
+            &IssueDraft {
+                project_key: &project,
+                issue_type: "Sub-task",
+                summary: "e2e subtask [e2e-auto]",
+                description: None,
+                priority: None,
+                labels: None,
+                components: None,
+                assignee: None,
+                parent: Some(&parent.key),
+            },
             &[],
         )
         .await
@@ -321,30 +337,14 @@ async fn e2e_issue_link_and_unlink() {
 
     let a = client
         .create_issue(
-            &project,
-            "Task",
-            "e2e link-a [e2e-auto]",
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
+            &minimal_draft(&project, "Task", "e2e link-a [e2e-auto]"),
             &[],
         )
         .await
         .expect("create a");
     let b = client
         .create_issue(
-            &project,
-            "Task",
-            "e2e link-b [e2e-auto]",
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
+            &minimal_draft(&project, "Task", "e2e link-b [e2e-auto]"),
             &[],
         )
         .await

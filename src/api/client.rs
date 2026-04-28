@@ -415,38 +415,29 @@ impl JiraClient {
     }
 
     /// Create a new issue.
-    #[allow(clippy::too_many_arguments)]
     pub async fn create_issue(
         &self,
-        project_key: &str,
-        issue_type: &str,
-        summary: &str,
-        description: Option<&str>,
-        priority: Option<&str>,
-        labels: Option<&[&str]>,
-        components: Option<&[&str]>,
-        assignee: Option<&str>,
-        parent: Option<&str>,
+        draft: &IssueDraft<'_>,
         custom_fields: &[(String, serde_json::Value)],
     ) -> Result<CreateIssueResponse, ApiError> {
         let mut fields = serde_json::json!({
-            "project": { "key": project_key },
-            "issuetype": { "name": issue_type },
-            "summary": summary,
+            "project": { "key": draft.project_key },
+            "issuetype": { "name": draft.issue_type },
+            "summary": draft.summary,
         });
 
-        if let Some(desc) = description {
+        if let Some(desc) = draft.description {
             fields["description"] = self.make_body(desc);
         }
-        if let Some(p) = priority {
+        if let Some(p) = draft.priority {
             fields["priority"] = serde_json::json!({ "name": p });
         }
-        if let Some(lbls) = labels
+        if let Some(lbls) = draft.labels
             && !lbls.is_empty()
         {
             fields["labels"] = serde_json::json!(lbls);
         }
-        if let Some(comps) = components
+        if let Some(comps) = draft.components
             && !comps.is_empty()
         {
             let payload: Vec<serde_json::Value> = comps
@@ -455,10 +446,10 @@ impl JiraClient {
                 .collect();
             fields["components"] = serde_json::Value::Array(payload);
         }
-        if let Some(id) = assignee {
+        if let Some(id) = draft.assignee {
             fields["assignee"] = self.assignee_payload(id);
         }
-        if let Some(parent_key) = parent {
+        if let Some(parent_key) = draft.parent {
             fields["parent"] = serde_json::json!({ "key": parent_key });
         }
         for (key, value) in custom_fields {
@@ -549,32 +540,28 @@ impl JiraClient {
         self.get("myself").await
     }
 
-    /// Update issue fields (summary, description, priority, components, or any custom field).
+    /// Update issue fields.
     ///
-    /// `components` is three-state: `None` leaves the field untouched on the server,
-    /// `Some(&[])` clears all components, and `Some(&[..])` replaces the field with the
-    /// given names.
+    /// All fields in `update` are optional. `components` is three-state:
+    /// `None` leaves the field untouched, `Some(&[])` clears it, `Some(&[..])` replaces it.
     pub async fn update_issue(
         &self,
         key: &str,
-        summary: Option<&str>,
-        description: Option<&str>,
-        priority: Option<&str>,
-        components: Option<&[&str]>,
+        update: &IssueUpdate<'_>,
         custom_fields: &[(String, serde_json::Value)],
     ) -> Result<(), ApiError> {
         validate_issue_key(key)?;
         let mut fields = serde_json::Map::new();
-        if let Some(s) = summary {
+        if let Some(s) = update.summary {
             fields.insert("summary".into(), serde_json::Value::String(s.into()));
         }
-        if let Some(d) = description {
+        if let Some(d) = update.description {
             fields.insert("description".into(), self.make_body(d));
         }
-        if let Some(p) = priority {
+        if let Some(p) = update.priority {
             fields.insert("priority".into(), serde_json::json!({ "name": p }));
         }
-        if let Some(comps) = components {
+        if let Some(comps) = update.components {
             let payload: Vec<serde_json::Value> = comps
                 .iter()
                 .map(|name| serde_json::json!({ "name": name }))

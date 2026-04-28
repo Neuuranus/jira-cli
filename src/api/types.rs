@@ -380,6 +380,34 @@ pub struct Myself {
     pub display_name: String,
 }
 
+/// Fields for creating a new issue.
+///
+/// `project_key`, `issue_type`, and `summary` are required by the Jira API.
+/// All other fields are optional; pass `None` to omit them from the create payload.
+pub struct IssueDraft<'a> {
+    pub project_key: &'a str,
+    pub issue_type: &'a str,
+    pub summary: &'a str,
+    pub description: Option<&'a str>,
+    pub priority: Option<&'a str>,
+    pub labels: Option<&'a [&'a str]>,
+    pub components: Option<&'a [&'a str]>,
+    pub assignee: Option<&'a str>,
+    pub parent: Option<&'a str>,
+}
+
+/// Fields to update on an existing issue.
+///
+/// All fields are optional. `components` is three-state:
+/// `None` leaves the field untouched, `Some(&[])` clears it, `Some(&[..])` replaces it.
+#[derive(Default)]
+pub struct IssueUpdate<'a> {
+    pub summary: Option<&'a str>,
+    pub description: Option<&'a str>,
+    pub priority: Option<&'a str>,
+    pub components: Option<&'a [&'a str]>,
+}
+
 /// Build an Atlassian Document Format document from plain text.
 ///
 /// Each newline-separated line becomes a separate ADF paragraph node.
