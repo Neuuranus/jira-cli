@@ -37,6 +37,16 @@ const SEARCH_JQL_MAX_PAGE: usize = 100;
 /// Jira Cloud. Requests only `id` to stay cheap (allows up to 5000/page).
 const SEARCH_JQL_SKIP_PAGE: usize = 1000;
 
+/// Build a `[{"name": x}, ...]` JSON array used by Jira for components, versions, etc.
+fn name_object_array(items: &[&str]) -> serde_json::Value {
+    serde_json::Value::Array(
+        items
+            .iter()
+            .map(|name| serde_json::json!({ "name": name }))
+            .collect(),
+    )
+}
+
 impl JiraClient {
     pub fn new(
         host: &str,
@@ -440,20 +450,12 @@ impl JiraClient {
         if let Some(comps) = draft.components
             && !comps.is_empty()
         {
-            let payload: Vec<serde_json::Value> = comps
-                .iter()
-                .map(|name| serde_json::json!({ "name": name }))
-                .collect();
-            fields["components"] = serde_json::Value::Array(payload);
+            fields["components"] = name_object_array(comps);
         }
         if let Some(fvs) = draft.fix_versions
             && !fvs.is_empty()
         {
-            let payload: Vec<serde_json::Value> = fvs
-                .iter()
-                .map(|name| serde_json::json!({ "name": name }))
-                .collect();
-            fields["fixVersions"] = serde_json::Value::Array(payload);
+            fields["fixVersions"] = name_object_array(fvs);
         }
         if let Some(id) = draft.assignee {
             fields["assignee"] = self.assignee_payload(id);
@@ -573,18 +575,10 @@ impl JiraClient {
             fields.insert("priority".into(), serde_json::json!({ "name": p }));
         }
         if let Some(comps) = update.components {
-            let payload: Vec<serde_json::Value> = comps
-                .iter()
-                .map(|name| serde_json::json!({ "name": name }))
-                .collect();
-            fields.insert("components".into(), serde_json::Value::Array(payload));
+            fields.insert("components".into(), name_object_array(comps));
         }
         if let Some(fvs) = update.fix_versions {
-            let payload: Vec<serde_json::Value> = fvs
-                .iter()
-                .map(|name| serde_json::json!({ "name": name }))
-                .collect();
-            fields.insert("fixVersions".into(), serde_json::Value::Array(payload));
+            fields.insert("fixVersions".into(), name_object_array(fvs));
         }
         if let Some(lbls) = update.labels {
             fields.insert("labels".into(), serde_json::json!(lbls));

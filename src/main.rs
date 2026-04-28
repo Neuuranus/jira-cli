@@ -19,42 +19,18 @@ fn parse_field(s: &str) -> Result<(String, serde_json::Value), String> {
     Ok((key.to_string(), value))
 }
 
-/// Parse a repeated `--components` `Vec<String>` into the three-state form
-/// expected by `JiraClient::update_issue`:
-///   - `None` if no values were given (leave field untouched)
-///   - `Some(vec![])` if the single value is the `"none"` sentinel (clear field)
-///   - `Some(refs)` otherwise (set field to these names)
-fn parse_components_update_arg(values: &[String]) -> Option<Vec<&str>> {
-    if values.is_empty() {
-        return None;
+/// Parse a repeated CLI string-array arg with the project's three-state sentinel:
+/// - empty input → `None` (leave field untouched)
+/// - single `"none"` value → `Some(Vec::new())` (clear field)
+/// - otherwise → `Some(refs)` (replace field with these values)
+///
+/// To set a literal value of `"none"`, bypass the sentinel via `--field <name>=[..]`.
+fn parse_vec_update_arg(values: &[String]) -> Option<Vec<&str>> {
+    match values {
+        [] => None,
+        [v] if v == "none" => Some(Vec::new()),
+        _ => Some(values.iter().map(String::as_str).collect()),
     }
-    if values.len() == 1 && values[0] == "none" {
-        return Some(Vec::new());
-    }
-    Some(values.iter().map(String::as_str).collect())
-}
-
-/// Parse a repeated `--fix-versions` `Vec<String>` into the three-state form.
-/// Sentinel semantics are identical to `parse_components_update_arg`.
-fn parse_fix_versions_update_arg(values: &[String]) -> Option<Vec<&str>> {
-    if values.is_empty() {
-        return None;
-    }
-    if values.len() == 1 && values[0] == "none" {
-        return Some(Vec::new());
-    }
-    Some(values.iter().map(String::as_str).collect())
-}
-
-/// Parse `--labels` for update: same three-state sentinel contract.
-fn parse_labels_update_arg(values: &[String]) -> Option<Vec<&str>> {
-    if values.is_empty() {
-        return None;
-    }
-    if values.len() == 1 && values[0] == "none" {
-        return Some(Vec::new());
-    }
-    Some(values.iter().map(String::as_str).collect())
 }
 
 /// Convert a `Vec<String>` of CLI-repeated values into an `Option<Vec<&str>>`.
@@ -724,9 +700,9 @@ async fn run(cli: Cli, out: OutputConfig) -> Result<(), Box<dyn std::error::Erro
                 assignee,
                 field,
             } => {
-                let parsed_components = parse_components_update_arg(&components);
-                let parsed_fix_versions = parse_fix_versions_update_arg(&fix_versions);
-                let parsed_labels = parse_labels_update_arg(&labels);
+                let parsed_components = parse_vec_update_arg(&components);
+                let parsed_fix_versions = parse_vec_update_arg(&fix_versions);
+                let parsed_labels = parse_vec_update_arg(&labels);
 
                 let resolved_assignee =
                     commands::issues::resolve_assignee_arg(&client, assignee.as_deref()).await?;
@@ -1235,75 +1211,28 @@ mod tests {
     use tempfile::TempDir;
 
     #[test]
-    fn parse_components_update_arg_empty_is_none() {
-        let values: Vec<String> = vec![];
-        assert!(parse_components_update_arg(&values).is_none());
+    fn parse_vec_update_arg_empty_is_none() {
+        assert!(parse_vec_update_arg(&[]).is_none());
     }
 
     #[test]
-    fn parse_components_update_arg_none_sentinel_clears() {
+    fn parse_vec_update_arg_none_sentinel_clears() {
         let values = vec!["none".to_string()];
-        assert_eq!(parse_components_update_arg(&values), Some(vec![]));
+        assert_eq!(parse_vec_update_arg(&values), Some(vec![]));
     }
 
     #[test]
-    fn parse_components_update_arg_values_pass_through() {
+    fn parse_vec_update_arg_values_pass_through() {
         let values = vec!["Backend".to_string(), "API".to_string()];
-        assert_eq!(
-            parse_components_update_arg(&values),
-            Some(vec!["Backend", "API"])
-        );
+        assert_eq!(parse_vec_update_arg(&values), Some(vec!["Backend", "API"]));
     }
 
     #[test]
-    fn parse_components_update_arg_real_component_named_none_with_others() {
-        // If a user passes --components none --components Backend, "none" is
-        // treated as a literal component name, not the sentinel.
+    fn parse_vec_update_arg_literal_none_at_position_0_with_more_values_does_not_clear() {
+        // "none" is only a sentinel when it is the sole value. If accompanied by
+        // other values it is treated as a literal string, not a clear instruction.
         let values = vec!["none".to_string(), "Backend".to_string()];
-        assert_eq!(
-            parse_components_update_arg(&values),
-            Some(vec!["none", "Backend"])
-        );
-    }
-
-    #[test]
-    fn parse_fix_versions_update_arg_empty_is_none() {
-        assert!(parse_fix_versions_update_arg(&[]).is_none());
-    }
-
-    #[test]
-    fn parse_fix_versions_update_arg_none_sentinel_clears() {
-        let values = vec!["none".to_string()];
-        assert_eq!(parse_fix_versions_update_arg(&values), Some(vec![]));
-    }
-
-    #[test]
-    fn parse_fix_versions_update_arg_values_pass_through() {
-        let values = vec!["1.2.0".to_string(), "1.3.0".to_string()];
-        assert_eq!(
-            parse_fix_versions_update_arg(&values),
-            Some(vec!["1.2.0", "1.3.0"])
-        );
-    }
-
-    #[test]
-    fn parse_labels_update_arg_empty_is_none() {
-        assert!(parse_labels_update_arg(&[]).is_none());
-    }
-
-    #[test]
-    fn parse_labels_update_arg_none_sentinel_clears() {
-        let values = vec!["none".to_string()];
-        assert_eq!(parse_labels_update_arg(&values), Some(vec![]));
-    }
-
-    #[test]
-    fn parse_labels_update_arg_values_pass_through() {
-        let values = vec!["backend".to_string(), "urgent".to_string()];
-        assert_eq!(
-            parse_labels_update_arg(&values),
-            Some(vec!["backend", "urgent"])
-        );
+        assert_eq!(parse_vec_update_arg(&values), Some(vec!["none", "Backend"]));
     }
 
     #[test]

@@ -153,13 +153,17 @@ fn completions_install_powershell_returns_input_error() {
 // ── issues update end-to-end (binary + mock server) ──────────────────────────
 
 /// Run the `jira` binary against a MockServer. Sets all required env vars, runs
-/// the process to completion, and returns its output. The process environment is
-/// held for the duration of the call.
+/// the process to completion, and returns its output.
 fn run_jira_against(server: &MockServer, args: &[&str]) -> std::process::Output {
     let _env = ProcessEnvLock::acquire().unwrap();
     let dir = TempDir::new().unwrap();
+    // All `_`-prefixed guards below MUST remain in scope past `.output()`.
+    // They are RAII guards that restore the prior environment on drop, and
+    // their drop point is the end of this function — moving any of them
+    // (or the `Command::output()` call) into a separate statement would
+    // release the env vars before the child process inherits them.
     let _config_dir = set_config_dir_env(dir.path());
-    // Pass the MockServer URI as JIRA_HOST; JiraClient::new preserves the http:// scheme.
+    // JiraClient::new preserves the http:// scheme, so the MockServer URI works as JIRA_HOST.
     let host = server.uri();
     let _host = EnvVarGuard::set("JIRA_HOST", &host);
     let _email = EnvVarGuard::set("JIRA_EMAIL", "test@example.com");
