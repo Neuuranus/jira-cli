@@ -18,6 +18,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 
 
+
+## [0.3.12](https://github.com/rvben/jira-cli/compare/v0.3.11...v0.3.12) - 2026-04-28
+
+### Added
+
+- **issues**: add --labels filter to issues list ([3956f89](https://github.com/rvben/jira-cli/commit/3956f89e6706f21f86d5068bd0983807d53ed0ad))
+- **issues**: include components in issues show --json output ([eed7328](https://github.com/rvben/jira-cli/commit/eed73281bf1f47de51d807bb404c9ce0bc7a7daa))
+- **projects**: add components subcommand for component discovery ([f97c012](https://github.com/rvben/jira-cli/commit/f97c0120b2f41dc650ac2dd4f9b4aaf745822df6))
+- **issues**: add --components filter to issues list ([8c6c4a7](https://github.com/rvben/jira-cli/commit/8c6c4a75d4f1b57fc6a420600d79b3a7ed74497b))
+- **issues**: add --components flag to issues update ([4c856cb](https://github.com/rvben/jira-cli/commit/4c856cb5acc5ccfbd7ac513b4f171a4d37c73873))
+- **issues**: add --component flag to issues create ([4daa8e5](https://github.com/rvben/jira-cli/commit/4daa8e518508fab59c18782b14ebc221aa358ab4))
+- **issues**: render components in issue detail view ([d3d40c5](https://github.com/rvben/jira-cli/commit/d3d40c53180646185eea9e50a07301c6535116d2))
+- **issues**: deserialize component field from Jira API ([232bc93](https://github.com/rvben/jira-cli/commit/232bc93de5d21d584f22762011dd92feea04d560))
+
 ## [0.3.11](https://github.com/rvben/jira-cli/compare/v0.3.10...v0.3.11) - 2026-04-23
 
 ### Added
