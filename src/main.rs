@@ -34,6 +34,17 @@ fn parse_components_update_arg(values: &[String]) -> Option<Vec<&str>> {
     Some(values.iter().map(String::as_str).collect())
 }
 
+/// Convert a `Vec<String>` of CLI-repeated values into an `Option<Vec<&str>>`.
+/// `None` if empty, `Some(refs)` otherwise. The caller then `as_deref()`s into
+/// `Option<&[&str]>` for the API layer.
+fn vec_to_opt_refs(values: &[String]) -> Option<Vec<&str>> {
+    if values.is_empty() {
+        None
+    } else {
+        Some(values.iter().map(String::as_str).collect())
+    }
+}
+
 #[derive(Parser)]
 #[command(
     name = "jira",
@@ -156,6 +167,10 @@ enum IssuesCommand {
         /// Filter by sprint name or use "active" for open sprints
         #[arg(long)]
         sprint: Option<String>,
+
+        /// Filter by component (can be specified multiple times)
+        #[arg(long)]
+        components: Vec<String>,
 
         /// Additional JQL to append
         #[arg(long)]
@@ -567,11 +582,14 @@ async fn run(cli: Cli, out: OutputConfig) -> Result<(), Box<dyn std::error::Erro
                 assignee,
                 issue_type,
                 sprint,
+                components,
                 jql,
                 limit,
                 offset,
                 all,
             } => {
+                let parsed_components = vec_to_opt_refs(&components);
+                let components_opt: Option<&[&str]> = parsed_components.as_deref();
                 commands::issues::list(
                     &client,
                     &out,
@@ -580,6 +598,7 @@ async fn run(cli: Cli, out: OutputConfig) -> Result<(), Box<dyn std::error::Erro
                     assignee.as_deref(),
                     issue_type.as_deref(),
                     sprint.as_deref(),
+                    components_opt,
                     jql.as_deref(),
                     limit,
                     offset,
@@ -626,18 +645,10 @@ async fn run(cli: Cli, out: OutputConfig) -> Result<(), Box<dyn std::error::Erro
                 parent,
                 field,
             } => {
-                let label_refs: Vec<&str> = labels.iter().map(String::as_str).collect();
-                let labels_opt = if label_refs.is_empty() {
-                    None
-                } else {
-                    Some(label_refs.as_slice())
-                };
-                let component_refs: Vec<&str> = components.iter().map(String::as_str).collect();
-                let components_opt = if component_refs.is_empty() {
-                    None
-                } else {
-                    Some(component_refs.as_slice())
-                };
+                let parsed_labels = vec_to_opt_refs(&labels);
+                let labels_opt: Option<&[&str]> = parsed_labels.as_deref();
+                let parsed_components = vec_to_opt_refs(&components);
+                let components_opt: Option<&[&str]> = parsed_components.as_deref();
                 let assignee_str = match assignee.as_deref() {
                     Some("me") => {
                         let me = client.get_myself().await?;
@@ -1197,6 +1208,18 @@ mod tests {
             parse_components_update_arg(&values),
             Some(vec!["none", "Backend"])
         );
+    }
+
+    #[test]
+    fn vec_to_opt_refs_empty_is_none() {
+        let values: Vec<String> = vec![];
+        assert!(vec_to_opt_refs(&values).is_none());
+    }
+
+    #[test]
+    fn vec_to_opt_refs_passes_through_values() {
+        let values = vec!["a".to_string(), "b".to_string()];
+        assert_eq!(vec_to_opt_refs(&values), Some(vec!["a", "b"]));
     }
 
     #[test]

@@ -1163,7 +1163,7 @@ async fn issues_list_with_no_results_succeeds() {
     let client = test_client(&server);
     let out = json_out();
     jira_cli::commands::issues::list(
-        &client, &out, None, None, None, None, None, None, 50, 0, false,
+        &client, &out, None, None, None, None, None, None, None, 50, 0, false,
     )
     .await
     .unwrap();
@@ -2051,6 +2051,7 @@ async fn issues_list_type_filter_adds_issuetype_to_jql() {
         Some("Bug"),
         None,
         None,
+        None,
         50,
         0,
         false,
@@ -2132,7 +2133,7 @@ async fn issues_list_all_fetches_multiple_pages() {
 
     let out = json_out();
     jira_cli::commands::issues::list(
-        &client, &out, None, None, None, None, None, None, 50, 0, true,
+        &client, &out, None, None, None, None, None, None, None, 50, 0, true,
     )
     .await
     .unwrap();

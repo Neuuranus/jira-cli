@@ -12,12 +12,15 @@ pub async fn list(
     assignee: Option<&str>,
     issue_type: Option<&str>,
     sprint: Option<&str>,
+    components: Option<&[&str]>,
     jql_extra: Option<&str>,
     limit: usize,
     offset: usize,
     all: bool,
 ) -> Result<(), ApiError> {
-    let jql = build_list_jql(project, status, assignee, issue_type, sprint, jql_extra);
+    let jql = build_list_jql(
+        project, status, assignee, issue_type, sprint, components, jql_extra,
+    );
     if all {
         let issues = fetch_all_issues(client, &jql).await?;
         let n = issues.len();
@@ -58,6 +61,7 @@ pub async fn mine(
         Some("me"),
         issue_type,
         sprint,
+        None,
         None,
         limit,
         0,
@@ -980,12 +984,14 @@ fn issue_detail_to_json(issue: &Issue, client: &JiraClient) -> serde_json::Value
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
+#[allow(clippy::too_many_arguments)]
 fn build_list_jql(
     project: Option<&str>,
     status: Option<&str>,
     assignee: Option<&str>,
     issue_type: Option<&str>,
     sprint: Option<&str>,
+    components: Option<&[&str]>,
     extra: Option<&str>,
 ) -> String {
     let mut parts: Vec<String> = Vec::new();
@@ -1011,6 +1017,19 @@ fn build_list_jql(
             parts.push("sprint in openSprints()".into());
         } else {
             parts.push(format!(r#"sprint = "{}""#, escape_jql(s)));
+        }
+    }
+    if let Some(comps) = components {
+        match comps.len() {
+            0 => {}
+            1 => parts.push(format!(r#"component = "{}""#, escape_jql(comps[0]))),
+            _ => {
+                let quoted: Vec<String> = comps
+                    .iter()
+                    .map(|c| format!(r#""{}""#, escape_jql(c)))
+                    .collect();
+                parts.push(format!("component in ({})", quoted.join(", ")));
+            }
         }
     }
     if let Some(e) = extra {
@@ -1134,14 +1153,14 @@ mod tests {
     #[test]
     fn build_list_jql_empty() {
         assert_eq!(
-            build_list_jql(None, None, None, None, None, None),
+            build_list_jql(None, None, None, None, None, None, None),
             "ORDER BY updated DESC"
         );
     }
 
     #[test]
     fn build_list_jql_escapes_quotes() {
-        let jql = build_list_jql(None, Some(r#"Done" OR 1=1"#), None, None, None, None);
+        let jql = build_list_jql(None, Some(r#"Done" OR 1=1"#), None, None, None, None, None);
         // The double quote must be backslash-escaped so it cannot break out of the JQL string.
         // The resulting clause should be:  status = "Done\" OR 1=1"
         assert!(jql.contains(r#"\""#), "double quote must be escaped");
@@ -1153,33 +1172,93 @@ mod tests {
 
     #[test]
     fn build_list_jql_project_and_status() {
-        let jql = build_list_jql(Some("PROJ"), Some("In Progress"), None, None, None, None);
+        let jql = build_list_jql(
+            Some("PROJ"),
+            Some("In Progress"),
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
         assert!(jql.contains(r#"project = "PROJ""#));
         assert!(jql.contains(r#"status = "In Progress""#));
     }
 
     #[test]
     fn build_list_jql_assignee_me() {
-        let jql = build_list_jql(None, None, Some("me"), None, None, None);
+        let jql = build_list_jql(None, None, Some("me"), None, None, None, None);
         assert!(jql.contains("currentUser()"));
     }
 
     #[test]
     fn build_list_jql_issue_type() {
-        let jql = build_list_jql(None, None, None, Some("Bug"), None, None);
+        let jql = build_list_jql(None, None, None, Some("Bug"), None, None, None);
         assert!(jql.contains(r#"issuetype = "Bug""#));
     }
 
     #[test]
     fn build_list_jql_sprint_active() {
-        let jql = build_list_jql(None, None, None, None, Some("active"), None);
+        let jql = build_list_jql(None, None, None, None, Some("active"), None, None);
         assert!(jql.contains("sprint in openSprints()"));
     }
 
     #[test]
     fn build_list_jql_sprint_named() {
-        let jql = build_list_jql(None, None, None, None, Some("Sprint 42"), None);
+        let jql = build_list_jql(None, None, None, None, Some("Sprint 42"), None, None);
         assert!(jql.contains(r#"sprint = "Sprint 42""#));
+    }
+
+    #[test]
+    fn build_list_jql_single_component() {
+        let jql = build_list_jql(None, None, None, None, None, Some(&["Backend"]), None);
+        assert!(
+            jql.contains(r#"component = "Backend""#),
+            "expected single-component clause, got: {jql}"
+        );
+    }
+
+    #[test]
+    fn build_list_jql_multiple_components() {
+        let jql = build_list_jql(
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(&["Backend", "API"]),
+            None,
+        );
+        assert!(
+            jql.contains(r#"component in ("Backend", "API")"#),
+            "expected `component in (...)` clause, got: {jql}"
+        );
+    }
+
+    #[test]
+    fn build_list_jql_escapes_component_quotes() {
+        let jql = build_list_jql(
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(&[r#"weird "name""#]),
+            None,
+        );
+        assert!(
+            jql.contains(r#"component = "weird \"name\"""#),
+            "expected escaped quotes, got: {jql}"
+        );
+    }
+
+    #[test]
+    fn build_list_jql_empty_components_emits_no_clause() {
+        let jql = build_list_jql(None, None, None, None, None, Some(&[]), None);
+        assert!(
+            !jql.contains("component"),
+            "expected no component clause for empty slice, got: {jql}"
+        );
     }
 
     #[test]
