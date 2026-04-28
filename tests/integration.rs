@@ -196,6 +196,35 @@ async fn get_issue_accepts_key_with_digit_in_project_part() {
     assert_eq!(issue.key, "ABC2-1");
 }
 
+#[tokio::test]
+async fn get_issue_includes_components() {
+    let server = MockServer::start().await;
+    let mut fixture = issue_fixture("PROJ-1", "Test", "Open");
+    fixture["fields"]["components"] = serde_json::json!([
+        {"id": "10010", "name": "Backend"},
+        {"id": "10020", "name": "Frontend", "description": "UI layer"},
+    ]);
+
+    Mock::given(method("GET"))
+        .and(path("/rest/api/3/issue/PROJ-1"))
+        .and(query_param(
+            "fields",
+            "summary,status,assignee,reporter,priority,issuetype,description,labels,components,created,updated,comment,issuelinks",
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(fixture))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = test_client(&server);
+    let issue = client.get_issue("PROJ-1").await.unwrap();
+    let components = issue.components();
+    assert_eq!(components.len(), 2);
+    assert_eq!(components[0].name, "Backend");
+    assert_eq!(components[0].id, "10010");
+    assert_eq!(components[1].description.as_deref(), Some("UI layer"));
+}
+
 // ── Search / list ──────────────────────────────────────────────────────────────
 
 #[tokio::test]

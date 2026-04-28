@@ -51,6 +51,10 @@ impl Issue {
     pub fn browser_url(&self, site_url: &str) -> String {
         format!("{site_url}/browse/{}", self.key)
     }
+
+    pub fn components(&self) -> &[Component] {
+        self.fields.components.as_deref().unwrap_or(&[])
+    }
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -63,6 +67,7 @@ pub struct IssueFields {
     pub issuetype: IssueTypeField,
     pub description: Option<serde_json::Value>,
     pub labels: Option<Vec<String>>,
+    pub components: Option<Vec<Component>>,
     pub created: Option<String>,
     pub updated: Option<String>,
     pub comment: Option<CommentList>,
@@ -167,6 +172,14 @@ pub struct LinkedIssue {
 pub struct LinkedIssueFields {
     pub summary: String,
     pub status: StatusField,
+}
+
+/// A Jira project component (a sub-grouping of issues within a project).
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct Component {
+    pub id: String,
+    pub name: String,
+    pub description: Option<String>,
 }
 
 /// A Jira Agile board.
