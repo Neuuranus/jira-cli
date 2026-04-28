@@ -260,6 +260,7 @@ pub async fn create(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn update(
     client: &JiraClient,
     out: &OutputConfig,
@@ -267,10 +268,18 @@ pub async fn update(
     summary: Option<&str>,
     description: Option<&str>,
     priority: Option<&str>,
+    components: Option<&[&str]>,
     custom_fields: &[(String, serde_json::Value)],
 ) -> Result<(), ApiError> {
     client
-        .update_issue(key, summary, description, priority, custom_fields)
+        .update_issue(
+            key,
+            summary,
+            description,
+            priority,
+            components,
+            custom_fields,
+        )
         .await?;
     out.print_result(
         &serde_json::json!({ "key": key, "updated": true }),

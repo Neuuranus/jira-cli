@@ -19,6 +19,21 @@ fn parse_field(s: &str) -> Result<(String, serde_json::Value), String> {
     Ok((key.to_string(), value))
 }
 
+/// Parse a repeated `--components` `Vec<String>` into the three-state form
+/// expected by `JiraClient::update_issue`:
+///   - `None` if no values were given (leave field untouched)
+///   - `Some(vec![])` if the single value is the `"none"` sentinel (clear field)
+///   - `Some(refs)` otherwise (set field to these names)
+fn parse_components_update_arg(values: &[String]) -> Option<Vec<&str>> {
+    if values.is_empty() {
+        return None;
+    }
+    if values.len() == 1 && values[0] == "none" {
+        return Some(Vec::new());
+    }
+    Some(values.iter().map(String::as_str).collect())
+}
+
 #[derive(Parser)]
 #[command(
     name = "jira",
@@ -265,6 +280,10 @@ enum IssuesCommand {
         /// New priority (e.g. High, Medium, Low)
         #[arg(long)]
         priority: Option<String>,
+
+        /// Components to set (replaces existing; use "none" alone to clear)
+        #[arg(long)]
+        components: Vec<String>,
 
         /// Custom field values as key=value pairs (e.g. --field customfield_10016=5)
         #[arg(long, value_parser = parse_field)]
@@ -649,8 +668,13 @@ async fn run(cli: Cli, out: OutputConfig) -> Result<(), Box<dyn std::error::Erro
                 summary,
                 description,
                 priority,
+                components,
                 field,
             } => {
+                // `--components none` (alone) clears the field. If a real component is
+                // named "none", users can bypass the sentinel via `--field components=[...]`.
+                let parsed_components = parse_components_update_arg(&components);
+                let components_opt: Option<&[&str]> = parsed_components.as_deref();
                 commands::issues::update(
                     &client,
                     &out,
@@ -658,6 +682,7 @@ async fn run(cli: Cli, out: OutputConfig) -> Result<(), Box<dyn std::error::Erro
                     summary.as_deref(),
                     description.as_deref(),
                     priority.as_deref(),
+                    components_opt,
                     &field,
                 )
                 .await?
@@ -1141,6 +1166,38 @@ mod tests {
         EnvVarGuard, ProcessEnvLock, set_config_dir_env, unset_config_dir_env,
     };
     use tempfile::TempDir;
+
+    #[test]
+    fn parse_components_update_arg_empty_is_none() {
+        let values: Vec<String> = vec![];
+        assert!(parse_components_update_arg(&values).is_none());
+    }
+
+    #[test]
+    fn parse_components_update_arg_none_sentinel_clears() {
+        let values = vec!["none".to_string()];
+        assert_eq!(parse_components_update_arg(&values), Some(vec![]));
+    }
+
+    #[test]
+    fn parse_components_update_arg_values_pass_through() {
+        let values = vec!["Backend".to_string(), "API".to_string()];
+        assert_eq!(
+            parse_components_update_arg(&values),
+            Some(vec!["Backend", "API"])
+        );
+    }
+
+    #[test]
+    fn parse_components_update_arg_real_component_named_none_with_others() {
+        // If a user passes --components none --components Backend, "none" is
+        // treated as a literal component name, not the sentinel.
+        let values = vec!["none".to_string(), "Backend".to_string()];
+        assert_eq!(
+            parse_components_update_arg(&values),
+            Some(vec!["none", "Backend"])
+        );
+    }
 
     #[test]
     fn schema_does_not_advertise_nonexistent_token_flag() {

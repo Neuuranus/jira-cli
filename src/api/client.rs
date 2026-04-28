@@ -549,13 +549,18 @@ impl JiraClient {
         self.get("myself").await
     }
 
-    /// Update issue fields (summary, description, priority, or any custom field).
+    /// Update issue fields (summary, description, priority, components, or any custom field).
+    ///
+    /// `components` is three-state: `None` leaves the field untouched on the server,
+    /// `Some(&[])` clears all components, and `Some(&[..])` replaces the field with the
+    /// given names.
     pub async fn update_issue(
         &self,
         key: &str,
         summary: Option<&str>,
         description: Option<&str>,
         priority: Option<&str>,
+        components: Option<&[&str]>,
         custom_fields: &[(String, serde_json::Value)],
     ) -> Result<(), ApiError> {
         validate_issue_key(key)?;
@@ -569,12 +574,19 @@ impl JiraClient {
         if let Some(p) = priority {
             fields.insert("priority".into(), serde_json::json!({ "name": p }));
         }
+        if let Some(comps) = components {
+            let payload: Vec<serde_json::Value> = comps
+                .iter()
+                .map(|name| serde_json::json!({ "name": name }))
+                .collect();
+            fields.insert("components".into(), serde_json::Value::Array(payload));
+        }
         for (k, value) in custom_fields {
             fields.insert(k.clone(), value.clone());
         }
         if fields.is_empty() {
             return Err(ApiError::InvalidInput(
-                "At least one field (--summary, --description, --priority, or --field) is required"
+                "At least one field (--summary, --description, --priority, --components, or --field) is required"
                     .into(),
             ));
         }

@@ -944,6 +944,50 @@ fn escape_jql_prevents_injection() {
 // ── issue update ──────────────────────────────────────────────────────────────
 
 #[tokio::test]
+async fn update_issue_sends_components() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("PUT"))
+        .and(path("/rest/api/3/issue/PROJ-1"))
+        .and(body_partial_json(serde_json::json!({
+            "fields": {
+                "components": [{ "name": "Backend" }],
+            }
+        })))
+        .respond_with(ResponseTemplate::new(204))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = test_client(&server);
+    client
+        .update_issue("PROJ-1", None, None, None, Some(&["Backend"]), &[])
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn update_issue_components_empty_clears_field() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("PUT"))
+        .and(path("/rest/api/3/issue/PROJ-1"))
+        .and(body_partial_json(serde_json::json!({
+            "fields": { "components": [] }
+        })))
+        .respond_with(ResponseTemplate::new(204))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = test_client(&server);
+    client
+        .update_issue("PROJ-1", None, None, None, Some(&[]), &[])
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
 async fn update_issue_sends_put_request() {
     let server = MockServer::start().await;
 
@@ -956,7 +1000,7 @@ async fn update_issue_sends_put_request() {
 
     let client = test_client(&server);
     client
-        .update_issue("PROJ-1", Some("New summary"), None, None, &[])
+        .update_issue("PROJ-1", Some("New summary"), None, None, None, &[])
         .await
         .unwrap();
 
@@ -980,7 +1024,7 @@ async fn update_issue_requires_at_least_one_field() {
     let client = test_client(&server);
 
     let err = client
-        .update_issue("PROJ-1", None, None, None, &[])
+        .update_issue("PROJ-1", None, None, None, None, &[])
         .await
         .unwrap_err();
     assert!(matches!(err, ApiError::InvalidInput(_)));
@@ -1625,7 +1669,7 @@ async fn update_issue_sends_custom_fields() {
 
     let custom = vec![("customfield_10106".to_string(), serde_json::json!(13))];
     client
-        .update_issue("PROJ-1", None, None, None, &custom)
+        .update_issue("PROJ-1", None, None, None, None, &custom)
         .await
         .unwrap();
 

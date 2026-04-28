@@ -194,6 +194,7 @@ async fn e2e_create_comment_transition_show_delete() {
             Some("e2e lifecycle test [e2e-auto] updated"),
             None,
             None,
+            None,
             &[],
         )
         .await
