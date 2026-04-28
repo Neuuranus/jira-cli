@@ -776,28 +776,34 @@ fn render_issue_detail(issue: &Issue) {
     };
     println!("{key}  {}", issue.summary());
     println!();
-    println!("  Type:     {}", issue.issue_type());
+    println!("  Type:       {}", issue.issue_type());
     let status_str = if color {
         colorize_status(issue.status(), issue.status())
     } else {
         issue.status().to_string()
     };
-    println!("  Status:   {status_str}");
-    println!("  Priority: {}", issue.priority());
-    println!("  Assignee: {}", issue.assignee());
+    println!("  Status:     {status_str}");
+    println!("  Priority:   {}", issue.priority());
+    println!("  Assignee:   {}", issue.assignee());
     if let Some(ref reporter) = issue.fields.reporter {
-        println!("  Reporter: {}", reporter.display_name);
+        println!("  Reporter:   {}", reporter.display_name);
     }
     if let Some(ref labels) = issue.fields.labels
         && !labels.is_empty()
     {
-        println!("  Labels:   {}", labels.join(", "));
+        println!("  Labels:     {}", labels.join(", "));
+    }
+    if let Some(ref components) = issue.fields.components
+        && !components.is_empty()
+    {
+        let names: Vec<&str> = components.iter().map(|c| c.name.as_str()).collect();
+        println!("  Components: {}", names.join(", "));
     }
     if let Some(ref created) = issue.fields.created {
-        println!("  Created:  {}", format_date(created));
+        println!("  Created:    {}", format_date(created));
     }
     if let Some(ref updated) = issue.fields.updated {
-        println!("  Updated:  {}", format_date(updated));
+        println!("  Updated:    {}", format_date(updated));
     }
 
     let desc = issue.description_text();
