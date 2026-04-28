@@ -544,9 +544,8 @@ async fn show_issue_json_includes_fix_versions() {
     let client = test_client(&server);
     let issue = client.get_issue("PROJ-1").await.unwrap();
 
-    // Exercise the actual `issue_detail_to_json` mapping that `commands::issues::show`
-    // calls when `--json` is set. This guards the rendered JSON shape, not just the
-    // raw deserialization.
+    // Verifies the JSON shape produced by the `--json` code path, which passes the
+    // deserialized issue through `issue_detail_to_json`.
     let json = jira_cli::commands::issues::issue_detail_to_json(&issue, &client);
 
     let fvs = json["fixVersions"]

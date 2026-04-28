@@ -1,6 +1,8 @@
 use owo_colors::OwoColorize;
 
-use crate::api::{ApiError, Issue, IssueDraft, IssueLink, IssueUpdate, JiraClient, escape_jql};
+use crate::api::{
+    ApiError, Issue, IssueDraft, IssueLink, IssueUpdate, JiraClient, Version, escape_jql,
+};
 use crate::output::{OutputConfig, use_color};
 
 /// Filter set shared by `issues list` and `issues mine`.
@@ -737,15 +739,12 @@ pub(crate) fn render_issue_table(issues: &[Issue], out: &OutputConfig) {
     }
 }
 
-pub(crate) fn render_issue_detail(issue: &Issue) {
+fn render_issue_detail(issue: &Issue) {
     let mut stdout = std::io::stdout().lock();
     write_issue_detail(&mut stdout, issue).expect("stdout write");
 }
 
-pub(crate) fn write_issue_detail<W: std::io::Write>(
-    out: &mut W,
-    issue: &Issue,
-) -> std::io::Result<()> {
+fn write_issue_detail<W: std::io::Write>(out: &mut W, issue: &Issue) -> std::io::Result<()> {
     let color = use_color();
     let key = if color {
         issue.key.yellow().bold().to_string()
@@ -781,13 +780,13 @@ pub(crate) fn write_issue_detail<W: std::io::Write>(
         && !fix_versions.is_empty()
     {
         let names: Vec<&str> = fix_versions.iter().map(|v| v.name.as_str()).collect();
-        writeln!(out, "  Fix Versions:    {}", names.join(", "))?;
+        writeln!(out, "  Fix Versions:     {}", names.join(", "))?;
     }
     if let Some(ref versions) = issue.fields.versions
         && !versions.is_empty()
     {
         let names: Vec<&str> = versions.iter().map(|v| v.name.as_str()).collect();
-        writeln!(out, "  Affects Versions:{}", names.join(", "))?;
+        writeln!(out, "  Affects Versions: {}", names.join(", "))?;
     }
     if let Some(ref created) = issue.fields.created {
         writeln!(out, "  Created:    {}", format_date(created))?;
@@ -875,6 +874,17 @@ pub(crate) fn issue_to_json(issue: &Issue, client: &JiraClient) -> serde_json::V
     })
 }
 
+fn version_to_json(v: &Version) -> serde_json::Value {
+    serde_json::json!({
+        "id": v.id,
+        "name": v.name,
+        "description": v.description,
+        "released": v.released,
+        "archived": v.archived,
+        "releaseDate": v.release_date,
+    })
+}
+
 pub fn issue_detail_to_json(issue: &Issue, client: &JiraClient) -> serde_json::Value {
     let comments: Vec<serde_json::Value> = issue
         .fields
@@ -955,24 +965,10 @@ pub fn issue_detail_to_json(issue: &Issue, client: &JiraClient) -> serde_json::V
         "labels": issue.fields.labels,
         "components": issue.fields.components,
         "fixVersions": issue.fields.fix_versions.as_ref().map(|fvs| {
-            fvs.iter().map(|v| serde_json::json!({
-                "id": v.id,
-                "name": v.name,
-                "description": v.description,
-                "released": v.released,
-                "archived": v.archived,
-                "releaseDate": v.release_date,
-            })).collect::<Vec<_>>()
+            fvs.iter().map(version_to_json).collect::<Vec<_>>()
         }),
         "affectedVersions": issue.fields.versions.as_ref().map(|vs| {
-            vs.iter().map(|v| serde_json::json!({
-                "id": v.id,
-                "name": v.name,
-                "description": v.description,
-                "released": v.released,
-                "archived": v.archived,
-                "releaseDate": v.release_date,
-            })).collect::<Vec<_>>()
+            vs.iter().map(version_to_json).collect::<Vec<_>>()
         }),
         "description": issue.description_text(),
         "created": issue.fields.created,
@@ -1161,7 +1157,7 @@ mod tests {
         }
     }
 
-    fn ver(id: &str, name: &str) -> Version {
+    fn make_version(id: &str, name: &str) -> Version {
         Version {
             id: id.into(),
             name: name.into(),
@@ -1174,24 +1170,27 @@ mod tests {
 
     #[test]
     fn write_issue_detail_renders_fix_versions_line() {
-        let issue = issue_fixture(Some(vec![ver("1", "1.2.0"), ver("2", "1.3.0")]), None);
+        let issue = issue_fixture(
+            Some(vec![make_version("1", "1.2.0"), make_version("2", "1.3.0")]),
+            None,
+        );
         let mut buf = Vec::new();
         write_issue_detail(&mut buf, &issue).unwrap();
         let out = String::from_utf8(buf).unwrap();
         assert!(
-            out.contains("  Fix Versions:    1.2.0, 1.3.0"),
+            out.contains("  Fix Versions:     1.2.0, 1.3.0"),
             "expected rendered fix-versions line, got:\n{out}"
         );
     }
 
     #[test]
     fn write_issue_detail_renders_affects_versions_line() {
-        let issue = issue_fixture(None, Some(vec![ver("5", "1.1.0")]));
+        let issue = issue_fixture(None, Some(vec![make_version("5", "1.1.0")]));
         let mut buf = Vec::new();
         write_issue_detail(&mut buf, &issue).unwrap();
         let out = String::from_utf8(buf).unwrap();
         assert!(
-            out.contains("  Affects Versions:1.1.0"),
+            out.contains("  Affects Versions: 1.1.0"),
             "expected affects-versions line, got:\n{out}"
         );
     }
