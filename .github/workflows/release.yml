@@ -68,18 +68,22 @@ jobs:
       - name: Prepare cargo cache dirs (arm64 linux)
         if: matrix.target == 'aarch64-unknown-linux-gnu'
         run: mkdir -p "${RUNNER_TOOL_CACHE}/cargo-cache/registry" "${RUNNER_TOOL_CACHE}/cargo-cache/git"
-      - name: Clean stale dist
-        # Keep dist/ fresh each run so previous builds cannot leak artifacts
-        # into the upload. Self-hosted runners do not clean automatically.
+      - name: Clean stale build outputs
+        # Wipe every path the upload-artifact glob below can pick up, so prior
+        # runs cannot leak tarballs or wheels into this run's artifact. Both
+        # macOS targets share one self-hosted runner, so cross-target leakage
+        # is possible too. Self-hosted runners do not clean automatically.
         # On the arm64 linux runner, maturin-action runs as root inside the
-        # manylinux container and leaves root-owned files in dist/; clean
-        # via docker so the unprivileged runner user can proceed.
+        # manylinux container and leaves root-owned files behind; clean via
+        # docker so the unprivileged runner user can proceed.
         shell: bash
         run: |
           if [[ "${{ matrix.target }}" == "aarch64-unknown-linux-gnu" ]]; then
-            docker run --rm -v "${GITHUB_WORKSPACE}:/io" alpine rm -rf /io/dist /io/target/wheels
+            docker run --rm -v "${GITHUB_WORKSPACE}:/io" alpine sh -c \
+              'rm -rf /io/dist /io/target/wheels && rm -f /io/jira-cli-*.tar.gz /io/jira-cli-*.tar.gz.sha256'
           else
             rm -rf dist target/wheels
+            rm -f jira-cli-*.tar.gz jira-cli-*.tar.gz.sha256
           fi
       - name: Install cross-compilation tools
         # Only needed on GitHub-hosted linux where the arm64 toolchain must
@@ -212,8 +216,10 @@ jobs:
         uses: astral-sh/setup-uv@v6
 
       - name: Publish to PyPI
+        # actions/upload-artifact preserves the `dist/` prefix from the build
+        # job, so wheels live at release-*/dist/*.whl, not release-*/*.whl.
         if: ${{ !inputs.dry_run && !inputs.skip_pypi }}
-        run: uv publish /tmp/artifacts/release-*/*.whl /tmp/artifacts/sdist/*.tar.gz
+        run: uv publish /tmp/artifacts/release-*/dist/*.whl /tmp/artifacts/sdist/*.tar.gz
         env:
           UV_PUBLISH_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
 
