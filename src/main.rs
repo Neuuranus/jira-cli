@@ -175,6 +175,10 @@ enum IssuesCommand {
         #[arg(long)]
         labels: Vec<String>,
 
+        /// Filter by fix version (can be specified multiple times)
+        #[arg(long)]
+        fix_versions: Vec<String>,
+
         /// Additional JQL to append
         #[arg(long)]
         jql: Option<String>,
@@ -608,6 +612,7 @@ async fn run(cli: Cli, out: OutputConfig) -> Result<(), Box<dyn std::error::Erro
                 sprint,
                 components,
                 labels,
+                fix_versions,
                 jql,
                 limit,
                 offset,
@@ -615,6 +620,7 @@ async fn run(cli: Cli, out: OutputConfig) -> Result<(), Box<dyn std::error::Erro
             } => {
                 let parsed_components = vec_to_opt_refs(&components);
                 let parsed_labels = vec_to_opt_refs(&labels);
+                let parsed_fix_versions = vec_to_opt_refs(&fix_versions);
                 let filters = commands::issues::ListFilters {
                     project: project.as_deref(),
                     status: status.as_deref(),
@@ -623,6 +629,7 @@ async fn run(cli: Cli, out: OutputConfig) -> Result<(), Box<dyn std::error::Erro
                     sprint: sprint.as_deref(),
                     components: parsed_components.as_deref(),
                     labels: parsed_labels.as_deref(),
+                    fix_versions: parsed_fix_versions.as_deref(),
                     jql_extra: jql.as_deref(),
                 };
                 commands::issues::list(&client, &out, filters, limit, offset, all).await?

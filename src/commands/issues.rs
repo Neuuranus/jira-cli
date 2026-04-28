@@ -18,6 +18,7 @@ pub struct ListFilters<'a> {
     pub sprint: Option<&'a str>,
     pub components: Option<&'a [&'a str]>,
     pub labels: Option<&'a [&'a str]>,
+    pub fix_versions: Option<&'a [&'a str]>,
     pub jql_extra: Option<&'a str>,
 }
 
@@ -1032,6 +1033,19 @@ fn build_list_jql(filters: &ListFilters<'_>) -> String {
             }
         }
     }
+    if let Some(fvs) = filters.fix_versions {
+        match fvs.len() {
+            0 => {}
+            1 => parts.push(format!(r#"fixVersion = "{}""#, escape_jql(fvs[0]))),
+            _ => {
+                let quoted: Vec<String> = fvs
+                    .iter()
+                    .map(|v| format!(r#""{}""#, escape_jql(v)))
+                    .collect();
+                parts.push(format!("fixVersion in ({})", quoted.join(", ")));
+            }
+        }
+    }
     if let Some(e) = filters.jql_extra {
         parts.push(format!("({e})"));
     }
@@ -1416,6 +1430,54 @@ mod tests {
         assert!(
             !jql.contains("labels"),
             "expected no labels clause for empty slice, got: {jql}"
+        );
+    }
+
+    #[test]
+    fn build_list_jql_single_fix_version() {
+        let jql = build_list_jql(&ListFilters {
+            fix_versions: Some(&["1.2.0"]),
+            ..Default::default()
+        });
+        assert!(
+            jql.contains(r#"fixVersion = "1.2.0""#),
+            "expected single fixVersion clause, got: {jql}"
+        );
+    }
+
+    #[test]
+    fn build_list_jql_multiple_fix_versions() {
+        let jql = build_list_jql(&ListFilters {
+            fix_versions: Some(&["1.2.0", "1.3.0"]),
+            ..Default::default()
+        });
+        assert!(
+            jql.contains(r#"fixVersion in ("1.2.0", "1.3.0")"#),
+            "expected fixVersion in (...) clause, got: {jql}"
+        );
+    }
+
+    #[test]
+    fn build_list_jql_escapes_fix_version_quotes() {
+        let jql = build_list_jql(&ListFilters {
+            fix_versions: Some(&[r#"weird "ver""#]),
+            ..Default::default()
+        });
+        assert!(
+            jql.contains(r#"fixVersion = "weird \"ver\"""#),
+            "expected escaped quotes, got: {jql}"
+        );
+    }
+
+    #[test]
+    fn build_list_jql_empty_fix_versions_emits_no_clause() {
+        let jql = build_list_jql(&ListFilters {
+            fix_versions: Some(&[]),
+            ..Default::default()
+        });
+        assert!(
+            !jql.contains("fixVersion"),
+            "expected no fixVersion clause for empty slice, got: {jql}"
         );
     }
 
