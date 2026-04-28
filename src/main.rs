@@ -594,22 +594,16 @@ async fn run(cli: Cli, out: OutputConfig) -> Result<(), Box<dyn std::error::Erro
                 all,
             } => {
                 let parsed_components = vec_to_opt_refs(&components);
-                let components_opt: Option<&[&str]> = parsed_components.as_deref();
-                commands::issues::list(
-                    &client,
-                    &out,
-                    project.as_deref(),
-                    status.as_deref(),
-                    assignee.as_deref(),
-                    issue_type.as_deref(),
-                    sprint.as_deref(),
-                    components_opt,
-                    jql.as_deref(),
-                    limit,
-                    offset,
-                    all,
-                )
-                .await?
+                let filters = commands::issues::ListFilters {
+                    project: project.as_deref(),
+                    status: status.as_deref(),
+                    assignee: assignee.as_deref(),
+                    issue_type: issue_type.as_deref(),
+                    sprint: sprint.as_deref(),
+                    components: parsed_components.as_deref(),
+                    jql_extra: jql.as_deref(),
+                };
+                commands::issues::list(&client, &out, filters, limit, offset, all).await?
             }
             IssuesCommand::Mine {
                 project,
@@ -619,17 +613,14 @@ async fn run(cli: Cli, out: OutputConfig) -> Result<(), Box<dyn std::error::Erro
                 limit,
                 all,
             } => {
-                commands::issues::mine(
-                    &client,
-                    &out,
-                    project.as_deref(),
-                    status.as_deref(),
-                    issue_type.as_deref(),
-                    sprint.as_deref(),
-                    limit,
-                    all,
-                )
-                .await?
+                let filters = commands::issues::ListFilters {
+                    project: project.as_deref(),
+                    status: status.as_deref(),
+                    issue_type: issue_type.as_deref(),
+                    sprint: sprint.as_deref(),
+                    ..Default::default()
+                };
+                commands::issues::mine(&client, &out, filters, limit, all).await?
             }
             IssuesCommand::Comments { key } => {
                 commands::issues::comments(&client, &out, &key).await?

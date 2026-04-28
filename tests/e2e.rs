@@ -274,9 +274,15 @@ async fn e2e_issues_mine() {
         return;
     };
     let out = json_out();
-    jira_cli::commands::issues::mine(&client, &out, None, None, None, None, 10, false)
-        .await
-        .expect("issues mine failed");
+    jira_cli::commands::issues::mine(
+        &client,
+        &out,
+        jira_cli::commands::issues::ListFilters::default(),
+        10,
+        false,
+    )
+    .await
+    .expect("issues mine failed");
 }
 
 #[tokio::test]
