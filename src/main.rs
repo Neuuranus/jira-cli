@@ -267,7 +267,7 @@ enum IssuesCommand {
         components: Vec<String>,
 
         /// Fix versions to set (can be specified multiple times)
-        #[arg(long = "fix-version")]
+        #[arg(long)]
         fix_versions: Vec<String>,
 
         /// Assign to this account ID (use "me" for yourself)
