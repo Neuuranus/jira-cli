@@ -436,6 +436,11 @@ enum ProjectsCommand {
         /// Project key (e.g. PROJ)
         key: String,
     },
+    /// List components for a project
+    Components {
+        /// Project key (e.g. PROJ)
+        key: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -756,6 +761,9 @@ async fn run(cli: Cli, out: OutputConfig) -> Result<(), Box<dyn std::error::Erro
         Command::Projects(cmd) => match cmd {
             ProjectsCommand::List => commands::projects::list(&client, &out).await?,
             ProjectsCommand::Show { key } => commands::projects::show(&client, &out, &key).await?,
+            ProjectsCommand::Components { key } => {
+                commands::projects::components(&client, &out, &key).await?
+            }
         },
 
         Command::Users(cmd) => match cmd {

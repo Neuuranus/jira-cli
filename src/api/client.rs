@@ -770,6 +770,15 @@ impl JiraClient {
         self.get(&format!("project/{key}")).await
     }
 
+    /// List all components for a project.
+    ///
+    /// Returns a flat array on both Jira Cloud (API v3) and DC/Server (API v2)
+    /// — the `project/{key}/components` endpoint is not paginated.
+    pub async fn list_components(&self, project_key: &str) -> Result<Vec<Component>, ApiError> {
+        self.get::<Vec<Component>>(&format!("project/{project_key}/components"))
+            .await
+    }
+
     // ── Fields ────────────────────────────────────────────────────────────────
 
     /// List all available fields (system and custom).

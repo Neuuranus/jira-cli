@@ -3534,3 +3534,42 @@ async fn create_issue_sends_components() {
         .unwrap();
     assert_eq!(resp.key, "PROJ-42");
 }
+
+#[tokio::test]
+async fn list_components_returns_components() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("GET"))
+        .and(path("/rest/api/3/project/PROJ/components"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+            {"id": "10010", "name": "Backend", "description": "Server-side"},
+            {"id": "10020", "name": "Frontend"},
+        ])))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = test_client(&server);
+    let comps = client.list_components("PROJ").await.unwrap();
+    assert_eq!(comps.len(), 2);
+    assert_eq!(comps[0].name, "Backend");
+    assert_eq!(comps[0].description.as_deref(), Some("Server-side"));
+    assert_eq!(comps[1].name, "Frontend");
+    assert!(comps[1].description.is_none());
+}
+
+#[tokio::test]
+async fn list_components_handles_empty_array() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("GET"))
+        .and(path("/rest/api/3/project/EMPTY/components"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([])))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = test_client(&server);
+    let comps = client.list_components("EMPTY").await.unwrap();
+    assert!(comps.is_empty());
+}

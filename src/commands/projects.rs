@@ -66,6 +66,61 @@ pub async fn list(client: &JiraClient, out: &OutputConfig) -> Result<(), ApiErro
     Ok(())
 }
 
+pub async fn components(
+    client: &JiraClient,
+    out: &OutputConfig,
+    project_key: &str,
+) -> Result<(), ApiError> {
+    let comps = client.list_components(project_key).await?;
+
+    if out.json {
+        out.print_data(
+            &serde_json::to_string_pretty(&serde_json::json!({
+                "project": project_key,
+                "total": comps.len(),
+                "components": comps.iter().map(|c| serde_json::json!({
+                    "id": c.id,
+                    "name": c.name,
+                    "description": c.description,
+                })).collect::<Vec<_>>(),
+            }))
+            .expect("failed to serialize JSON"),
+        );
+    } else {
+        if comps.is_empty() {
+            out.print_message(&format!("No components found for project {project_key}."));
+            return Ok(());
+        }
+
+        let color = use_color();
+        let name_w = comps.iter().map(|c| c.name.len()).max().unwrap_or(4).max(4) + 2;
+        let id_w = comps.iter().map(|c| c.id.len()).max().unwrap_or(2).max(2) + 2;
+
+        let header = format!("{:<name_w$} {:<id_w$} {}", "Name", "ID", "Description");
+        if color {
+            println!("{}", header.bold());
+        } else {
+            println!("{header}");
+        }
+
+        for c in &comps {
+            let desc = c.description.as_deref().unwrap_or("-");
+            if color {
+                println!(
+                    "{} {:<id_w$} {}",
+                    format!("{:<name_w$}", c.name).yellow(),
+                    c.id,
+                    desc,
+                );
+            } else {
+                println!("{:<name_w$} {:<id_w$} {}", c.name, c.id, desc);
+            }
+        }
+        out.print_message(&format!("{} components", comps.len()));
+    }
+    Ok(())
+}
+
 pub async fn show(client: &JiraClient, out: &OutputConfig, key: &str) -> Result<(), ApiError> {
     let project = client.get_project(key).await?;
 
