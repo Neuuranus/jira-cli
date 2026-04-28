@@ -579,12 +579,29 @@ impl JiraClient {
                 .collect();
             fields.insert("components".into(), serde_json::Value::Array(payload));
         }
+        if let Some(fvs) = update.fix_versions {
+            let payload: Vec<serde_json::Value> = fvs
+                .iter()
+                .map(|name| serde_json::json!({ "name": name }))
+                .collect();
+            fields.insert("fixVersions".into(), serde_json::Value::Array(payload));
+        }
+        if let Some(lbls) = update.labels {
+            fields.insert("labels".into(), serde_json::json!(lbls));
+        }
+        if let Some(assignee_choice) = update.assignee {
+            let payload = match assignee_choice {
+                None => serde_json::Value::Null,
+                Some(id) => self.assignee_payload(id),
+            };
+            fields.insert("assignee".into(), payload);
+        }
         for (k, value) in custom_fields {
             fields.insert(k.clone(), value.clone());
         }
         if fields.is_empty() {
             return Err(ApiError::InvalidInput(
-                "At least one field (--summary, --description, --priority, --components, or --field) is required"
+                "At least one field (--summary, --description, --priority, --components, --fix-versions, --labels, --assignee, or --field) is required"
                     .into(),
             ));
         }

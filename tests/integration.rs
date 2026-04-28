@@ -1189,6 +1189,212 @@ async fn update_issue_requires_at_least_one_field() {
         .await
         .unwrap_err();
     assert!(matches!(err, ApiError::InvalidInput(_)));
+    if let ApiError::InvalidInput(msg) = err {
+        assert!(
+            msg.contains("--fix-versions")
+                && msg.contains("--labels")
+                && msg.contains("--assignee"),
+            "error message should mention new flags, got: {msg}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn update_issue_sends_fix_versions() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("PUT"))
+        .and(path("/rest/api/3/issue/PROJ-1"))
+        .and(body_partial_json(serde_json::json!({
+            "fields": {
+                "fixVersions": [{ "name": "1.2.0" }],
+            }
+        })))
+        .respond_with(ResponseTemplate::new(204))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = test_client(&server);
+    client
+        .update_issue(
+            "PROJ-1",
+            &IssueUpdate {
+                fix_versions: Some(&["1.2.0"]),
+                ..Default::default()
+            },
+            &[],
+        )
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn update_issue_fix_versions_none_sentinel_clears() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("PUT"))
+        .and(path("/rest/api/3/issue/PROJ-1"))
+        .and(body_partial_json(serde_json::json!({
+            "fields": { "fixVersions": [] }
+        })))
+        .respond_with(ResponseTemplate::new(204))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = test_client(&server);
+    client
+        .update_issue(
+            "PROJ-1",
+            &IssueUpdate {
+                fix_versions: Some(&[]),
+                ..Default::default()
+            },
+            &[],
+        )
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn update_issue_sends_labels() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("PUT"))
+        .and(path("/rest/api/3/issue/PROJ-1"))
+        .and(body_partial_json(serde_json::json!({
+            "fields": { "labels": ["backend", "urgent"] }
+        })))
+        .respond_with(ResponseTemplate::new(204))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = test_client(&server);
+    client
+        .update_issue(
+            "PROJ-1",
+            &IssueUpdate {
+                labels: Some(&["backend", "urgent"]),
+                ..Default::default()
+            },
+            &[],
+        )
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn update_issue_labels_empty_clears_field() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("PUT"))
+        .and(path("/rest/api/3/issue/PROJ-1"))
+        .and(body_partial_json(serde_json::json!({
+            "fields": { "labels": [] }
+        })))
+        .respond_with(ResponseTemplate::new(204))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = test_client(&server);
+    client
+        .update_issue(
+            "PROJ-1",
+            &IssueUpdate {
+                labels: Some(&[]),
+                ..Default::default()
+            },
+            &[],
+        )
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn update_issue_sends_assignee_v3() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("PUT"))
+        .and(path("/rest/api/3/issue/PROJ-1"))
+        .and(body_partial_json(serde_json::json!({
+            "fields": { "assignee": { "accountId": "abc123" } }
+        })))
+        .respond_with(ResponseTemplate::new(204))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = test_client(&server);
+    client
+        .update_issue(
+            "PROJ-1",
+            &IssueUpdate {
+                assignee: Some(Some("abc123")),
+                ..Default::default()
+            },
+            &[],
+        )
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn update_issue_sends_assignee_v2() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("PUT"))
+        .and(path("/rest/api/2/issue/PROJ-1"))
+        .and(body_partial_json(serde_json::json!({
+            "fields": { "assignee": { "name": "ruben" } }
+        })))
+        .respond_with(ResponseTemplate::new(204))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = test_client_v2(&server);
+    client
+        .update_issue(
+            "PROJ-1",
+            &IssueUpdate {
+                assignee: Some(Some("ruben")),
+                ..Default::default()
+            },
+            &[],
+        )
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn update_issue_unassigns_via_null() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("PUT"))
+        .and(path("/rest/api/3/issue/PROJ-1"))
+        .and(body_partial_json(serde_json::json!({
+            "fields": { "assignee": null }
+        })))
+        .respond_with(ResponseTemplate::new(204))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = test_client(&server);
+    client
+        .update_issue(
+            "PROJ-1",
+            &IssueUpdate {
+                assignee: Some(None),
+                ..Default::default()
+            },
+            &[],
+        )
+        .await
+        .unwrap();
 }
 
 // ── myself ────────────────────────────────────────────────────────────────────

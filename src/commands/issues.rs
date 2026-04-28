@@ -1125,6 +1125,27 @@ fn resolve_terminal_width(tty_width: Option<usize>, columns: Option<usize>) -> u
     columns.unwrap_or(DEFAULT_TERMINAL_WIDTH)
 }
 
+/// Resolve a CLI `--assignee` argument into the three-state `IssueUpdate.assignee` value.
+///
+/// `--assignee me` triggers a `GET /myself` round-trip to fetch the current user's account ID.
+/// `--assignee none` returns `Some(None)` (the unassign sentinel).
+/// `--assignee <id>` returns `Some(Some(id))` (set to the literal account ID).
+/// `None` (flag absent) returns `None` (leave the field untouched).
+pub async fn resolve_assignee_arg(
+    client: &JiraClient,
+    arg: Option<&str>,
+) -> Result<Option<Option<String>>, ApiError> {
+    match arg {
+        None => Ok(None),
+        Some("none") => Ok(Some(None)),
+        Some("me") => {
+            let me = client.get_myself().await?;
+            Ok(Some(Some(me.account_id)))
+        }
+        Some(id) => Ok(Some(Some(id.to_string()))),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1449,5 +1470,52 @@ mod tests {
     #[test]
     fn resolve_terminal_width_defaults_when_nothing_available() {
         assert_eq!(resolve_terminal_width(None, None), DEFAULT_TERMINAL_WIDTH);
+    }
+
+    #[tokio::test]
+    async fn resolve_assignee_arg_absent_returns_none() {
+        let server = wiremock::MockServer::start().await;
+        let client = crate::api::JiraClient::new(
+            &server.uri(),
+            "test@example.com",
+            "test-token",
+            crate::api::AuthType::Basic,
+            3,
+        )
+        .unwrap();
+        let result = resolve_assignee_arg(&client, None).await.unwrap();
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn resolve_assignee_arg_none_sentinel_returns_some_none() {
+        let server = wiremock::MockServer::start().await;
+        let client = crate::api::JiraClient::new(
+            &server.uri(),
+            "test@example.com",
+            "test-token",
+            crate::api::AuthType::Basic,
+            3,
+        )
+        .unwrap();
+        let result = resolve_assignee_arg(&client, Some("none")).await.unwrap();
+        assert!(matches!(result, Some(None)));
+    }
+
+    #[tokio::test]
+    async fn resolve_assignee_arg_literal_id_passes_through() {
+        let server = wiremock::MockServer::start().await;
+        let client = crate::api::JiraClient::new(
+            &server.uri(),
+            "test@example.com",
+            "test-token",
+            crate::api::AuthType::Basic,
+            3,
+        )
+        .unwrap();
+        let result = resolve_assignee_arg(&client, Some("literal-id-999"))
+            .await
+            .unwrap();
+        assert_eq!(result, Some(Some("literal-id-999".to_string())));
     }
 }

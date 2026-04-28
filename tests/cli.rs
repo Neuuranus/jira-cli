@@ -4,6 +4,8 @@ use assert_cmd::prelude::*;
 use jira_cli::output::exit_codes;
 use jira_cli::test_support::{EnvVarGuard, ProcessEnvLock, set_config_dir_env, write_config};
 use tempfile::TempDir;
+use wiremock::matchers::{body_partial_json, method, path};
+use wiremock::{Mock, MockServer, ResponseTemplate};
 
 fn config_fixture() -> &'static str {
     r#"
@@ -146,4 +148,190 @@ fn completions_install_powershell_returns_input_error() {
     let stderr = String::from_utf8(output.stderr).unwrap();
     assert!(stderr.contains("not supported"));
     assert!(stderr.to_lowercase().contains("redirect"));
+}
+
+// ── issues update end-to-end (binary + mock server) ──────────────────────────
+
+/// Run the `jira` binary against a MockServer. Sets all required env vars, runs
+/// the process to completion, and returns its output. The process environment is
+/// held for the duration of the call.
+fn run_jira_against(server: &MockServer, args: &[&str]) -> std::process::Output {
+    let _env = ProcessEnvLock::acquire().unwrap();
+    let dir = TempDir::new().unwrap();
+    let _config_dir = set_config_dir_env(dir.path());
+    // Pass the MockServer URI as JIRA_HOST; JiraClient::new preserves the http:// scheme.
+    let host = server.uri();
+    let _host = EnvVarGuard::set("JIRA_HOST", &host);
+    let _email = EnvVarGuard::set("JIRA_EMAIL", "test@example.com");
+    let _token = EnvVarGuard::set("JIRA_TOKEN", "test-token");
+    let _profile = EnvVarGuard::unset("JIRA_PROFILE");
+    Command::cargo_bin("jira")
+        .unwrap()
+        .args(args)
+        .env("NO_COLOR", "1")
+        .output()
+        .unwrap()
+}
+
+#[tokio::test]
+async fn issues_update_dispatch_assignee_me_calls_myself_then_puts_account_id() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("GET"))
+        .and(path("/rest/api/3/myself"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "accountId": "abc-self-123",
+            "displayName": "Test User",
+            "emailAddress": "test@example.com",
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    Mock::given(method("PUT"))
+        .and(path("/rest/api/3/issue/PROJ-1"))
+        .and(body_partial_json(serde_json::json!({
+            "fields": { "assignee": { "accountId": "abc-self-123" } }
+        })))
+        .respond_with(ResponseTemplate::new(204))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let output = run_jira_against(&server, &["issues", "update", "PROJ-1", "--assignee", "me"]);
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[tokio::test]
+async fn issues_update_dispatch_assignee_none_sends_null_in_single_put() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("PUT"))
+        .and(path("/rest/api/3/issue/PROJ-1"))
+        .and(body_partial_json(serde_json::json!({
+            "fields": { "assignee": null }
+        })))
+        .respond_with(ResponseTemplate::new(204))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let output = run_jira_against(
+        &server,
+        &["issues", "update", "PROJ-1", "--assignee", "none"],
+    );
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[tokio::test]
+async fn issues_update_dispatch_fix_versions_none_sends_empty_array() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("PUT"))
+        .and(path("/rest/api/3/issue/PROJ-1"))
+        .and(body_partial_json(serde_json::json!({
+            "fields": { "fixVersions": [] }
+        })))
+        .respond_with(ResponseTemplate::new(204))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let output = run_jira_against(
+        &server,
+        &["issues", "update", "PROJ-1", "--fix-versions", "none"],
+    );
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[tokio::test]
+async fn issues_update_dispatch_labels_passthrough() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("PUT"))
+        .and(path("/rest/api/3/issue/PROJ-1"))
+        .and(body_partial_json(serde_json::json!({
+            "fields": { "labels": ["backend", "urgent"] }
+        })))
+        .respond_with(ResponseTemplate::new(204))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let output = run_jira_against(
+        &server,
+        &[
+            "issues", "update", "PROJ-1", "--labels", "backend", "--labels", "urgent",
+        ],
+    );
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[tokio::test]
+async fn issues_update_dispatch_combined_flags_send_one_put() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("GET"))
+        .and(path("/rest/api/3/myself"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "accountId": "abc-self-123",
+            "displayName": "Test User",
+            "emailAddress": "test@example.com",
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    Mock::given(method("PUT"))
+        .and(path("/rest/api/3/issue/PROJ-1"))
+        .and(body_partial_json(serde_json::json!({
+            "fields": {
+                "summary": "Updated summary",
+                "fixVersions": [{ "name": "1.2.0" }],
+                "labels": ["backend"],
+                "assignee": { "accountId": "abc-self-123" }
+            }
+        })))
+        .respond_with(ResponseTemplate::new(204))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let output = run_jira_against(
+        &server,
+        &[
+            "issues",
+            "update",
+            "PROJ-1",
+            "--summary",
+            "Updated summary",
+            "--fix-versions",
+            "1.2.0",
+            "--labels",
+            "backend",
+            "--assignee",
+            "me",
+        ],
+    );
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
