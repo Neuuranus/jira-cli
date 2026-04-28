@@ -193,9 +193,7 @@ pub struct Version {
     pub id: String,
     pub name: String,
     pub description: Option<String>,
-    #[serde(default)]
     pub released: Option<bool>,
-    #[serde(default)]
     pub archived: Option<bool>,
     pub release_date: Option<String>,
 }

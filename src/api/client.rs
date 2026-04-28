@@ -542,8 +542,10 @@ impl JiraClient {
 
     /// Update issue fields.
     ///
-    /// All fields in `update` are optional. `components` is three-state:
-    /// `None` leaves the field untouched, `Some(&[])` clears it, `Some(&[..])` replaces it.
+    /// All fields in `update` are optional. `components`, `fix_versions`, and `labels`
+    /// are three-state: `None` leaves the field untouched, `Some(&[])` clears it,
+    /// `Some(&[..])` replaces it. `assignee` is also three-state:
+    /// `None` = untouched, `Some(None)` = unassign, `Some(Some(id))` = set.
     pub async fn update_issue(
         &self,
         key: &str,
