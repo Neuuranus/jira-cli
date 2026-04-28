@@ -172,6 +172,10 @@ enum IssuesCommand {
         #[arg(long)]
         components: Vec<String>,
 
+        /// Filter by label (can be specified multiple times)
+        #[arg(long)]
+        labels: Vec<String>,
+
         /// Additional JQL to append
         #[arg(long)]
         jql: Option<String>,
@@ -588,12 +592,14 @@ async fn run(cli: Cli, out: OutputConfig) -> Result<(), Box<dyn std::error::Erro
                 issue_type,
                 sprint,
                 components,
+                labels,
                 jql,
                 limit,
                 offset,
                 all,
             } => {
                 let parsed_components = vec_to_opt_refs(&components);
+                let parsed_labels = vec_to_opt_refs(&labels);
                 let filters = commands::issues::ListFilters {
                     project: project.as_deref(),
                     status: status.as_deref(),
@@ -601,6 +607,7 @@ async fn run(cli: Cli, out: OutputConfig) -> Result<(), Box<dyn std::error::Erro
                     issue_type: issue_type.as_deref(),
                     sprint: sprint.as_deref(),
                     components: parsed_components.as_deref(),
+                    labels: parsed_labels.as_deref(),
                     jql_extra: jql.as_deref(),
                 };
                 commands::issues::list(&client, &out, filters, limit, offset, all).await?

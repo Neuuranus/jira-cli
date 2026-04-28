@@ -6,7 +6,7 @@ use crate::output::{OutputConfig, use_color};
 /// Filter set shared by `issues list` and `issues mine`.
 ///
 /// Each `Option<&str>` field maps to one CLI flag and emits one JQL clause when set.
-/// `components` is a slice because the CLI accepts the flag repeatably.
+/// `components` and `labels` are slices because the CLI accepts those flags repeatably.
 #[derive(Default)]
 pub struct ListFilters<'a> {
     pub project: Option<&'a str>,
@@ -15,6 +15,7 @@ pub struct ListFilters<'a> {
     pub issue_type: Option<&'a str>,
     pub sprint: Option<&'a str>,
     pub components: Option<&'a [&'a str]>,
+    pub labels: Option<&'a [&'a str]>,
     pub jql_extra: Option<&'a str>,
 }
 
@@ -1013,6 +1014,19 @@ fn build_list_jql(filters: &ListFilters<'_>) -> String {
             }
         }
     }
+    if let Some(lbls) = filters.labels {
+        match lbls.len() {
+            0 => {}
+            1 => parts.push(format!(r#"labels = "{}""#, escape_jql(lbls[0]))),
+            _ => {
+                let quoted: Vec<String> = lbls
+                    .iter()
+                    .map(|l| format!(r#""{}""#, escape_jql(l)))
+                    .collect();
+                parts.push(format!("labels in ({})", quoted.join(", ")));
+            }
+        }
+    }
     if let Some(e) = filters.jql_extra {
         parts.push(format!("({e})"));
     }
@@ -1246,6 +1260,54 @@ mod tests {
         assert!(
             !jql.contains("component"),
             "expected no component clause for empty slice, got: {jql}"
+        );
+    }
+
+    #[test]
+    fn build_list_jql_single_label() {
+        let jql = build_list_jql(&ListFilters {
+            labels: Some(&["backend"]),
+            ..Default::default()
+        });
+        assert!(
+            jql.contains(r#"labels = "backend""#),
+            "expected single-label clause, got: {jql}"
+        );
+    }
+
+    #[test]
+    fn build_list_jql_multiple_labels() {
+        let jql = build_list_jql(&ListFilters {
+            labels: Some(&["backend", "urgent"]),
+            ..Default::default()
+        });
+        assert!(
+            jql.contains(r#"labels in ("backend", "urgent")"#),
+            "expected `labels in (...)` clause, got: {jql}"
+        );
+    }
+
+    #[test]
+    fn build_list_jql_escapes_label_quotes() {
+        let jql = build_list_jql(&ListFilters {
+            labels: Some(&[r#"weird "name""#]),
+            ..Default::default()
+        });
+        assert!(
+            jql.contains(r#"labels = "weird \"name\"""#),
+            "expected escaped quotes, got: {jql}"
+        );
+    }
+
+    #[test]
+    fn build_list_jql_empty_labels_emits_no_clause() {
+        let jql = build_list_jql(&ListFilters {
+            labels: Some(&[]),
+            ..Default::default()
+        });
+        assert!(
+            !jql.contains("labels"),
+            "expected no labels clause for empty slice, got: {jql}"
         );
     }
 
