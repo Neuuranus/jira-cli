@@ -474,6 +474,7 @@ async fn create_issue_posts_correct_payload() {
             None,
             None,
             None,
+            None,
             &[],
         )
         .await
@@ -1600,7 +1601,7 @@ async fn create_issue_sends_custom_fields() {
     ];
     client
         .create_issue(
-            "PROJ", "Story", "My story", None, None, None, None, None, &custom,
+            "PROJ", "Story", "My story", None, None, None, None, None, None, &custom,
         )
         .await
         .unwrap();
@@ -1761,6 +1762,7 @@ async fn create_issue_v2_assignee_uses_name_field() {
             None,
             None,
             None,
+            None,
             Some("ruben"),
             None,
             &[],
@@ -1796,6 +1798,7 @@ async fn create_issue_v3_assignee_uses_account_id_field() {
             "PROJ",
             "Task",
             "My task",
+            None,
             None,
             None,
             None,
@@ -2408,6 +2411,7 @@ async fn create_issue_with_parent_includes_parent_field() {
         "PROJ",
         "Subtask",
         "Do a sub-thing",
+        None,
         None,
         None,
         None,
@@ -3338,6 +3342,7 @@ async fn create_issue_422_returns_api_error_with_status() {
             None,
             None,
             None,
+            None,
             &[],
         )
         .await
@@ -3441,4 +3446,46 @@ async fn projects_show_text_output_renders_details() {
     jira_cli::commands::projects::show(&client, &out, "PROJ")
         .await
         .unwrap();
+}
+
+#[tokio::test]
+async fn create_issue_sends_components() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("POST"))
+        .and(path("/rest/api/3/issue"))
+        .and(body_partial_json(serde_json::json!({
+            "fields": {
+                "project": { "key": "PROJ" },
+                "issuetype": { "name": "Bug" },
+                "summary": "Has components",
+                "components": [{ "name": "Backend" }, { "name": "API" }],
+            }
+        })))
+        .respond_with(ResponseTemplate::new(201).set_body_json(serde_json::json!({
+            "id": "10001",
+            "key": "PROJ-42",
+            "self": "https://test.atlassian.net/rest/api/3/issue/10001",
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = test_client(&server);
+    let resp = client
+        .create_issue(
+            "PROJ",
+            "Bug",
+            "Has components",
+            None,
+            None,
+            None,
+            Some(&["Backend", "API"]),
+            None,
+            None,
+            &[],
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.key, "PROJ-42");
 }

@@ -424,6 +424,7 @@ impl JiraClient {
         description: Option<&str>,
         priority: Option<&str>,
         labels: Option<&[&str]>,
+        components: Option<&[&str]>,
         assignee: Option<&str>,
         parent: Option<&str>,
         custom_fields: &[(String, serde_json::Value)],
@@ -444,6 +445,15 @@ impl JiraClient {
             && !lbls.is_empty()
         {
             fields["labels"] = serde_json::json!(lbls);
+        }
+        if let Some(comps) = components
+            && !comps.is_empty()
+        {
+            let payload: Vec<serde_json::Value> = comps
+                .iter()
+                .map(|name| serde_json::json!({ "name": name }))
+                .collect();
+            fields["components"] = serde_json::Value::Array(payload);
         }
         if let Some(id) = assignee {
             fields["assignee"] = self.assignee_payload(id);

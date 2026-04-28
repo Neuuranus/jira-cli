@@ -55,7 +55,7 @@ struct Cli {
 enum Command {
     /// Manage issues
     #[command(subcommand, visible_alias = "issue")]
-    Issues(IssuesCommand),
+    Issues(Box<IssuesCommand>),
 
     /// List projects
     #[command(subcommand, visible_alias = "project", arg_required_else_help = true)]
@@ -227,6 +227,10 @@ enum IssuesCommand {
         /// Labels to apply (can be specified multiple times)
         #[arg(long)]
         labels: Vec<String>,
+
+        /// Components to attach (can be specified multiple times)
+        #[arg(long)]
+        components: Vec<String>,
 
         /// Assign to this account ID (use "me" for yourself)
         #[arg(long)]
@@ -505,7 +509,8 @@ async fn run(cli: Cli, out: OutputConfig) -> Result<(), Box<dyn std::error::Erro
     if cfg.read_only {
         let is_write = matches!(
             &cli.command,
-            Command::Issues(
+            Command::Issues(cmd) if matches!(
+                cmd.as_ref(),
                 IssuesCommand::Create { .. }
                     | IssuesCommand::Update { .. }
                     | IssuesCommand::Move { .. }
@@ -536,7 +541,7 @@ async fn run(cli: Cli, out: OutputConfig) -> Result<(), Box<dyn std::error::Erro
     )?;
 
     match cli.command {
-        Command::Issues(cmd) => match cmd {
+        Command::Issues(cmd) => match *cmd {
             IssuesCommand::List {
                 project,
                 status,
@@ -596,6 +601,7 @@ async fn run(cli: Cli, out: OutputConfig) -> Result<(), Box<dyn std::error::Erro
                 description,
                 priority,
                 labels,
+                components,
                 assignee,
                 sprint,
                 parent,
@@ -606,6 +612,12 @@ async fn run(cli: Cli, out: OutputConfig) -> Result<(), Box<dyn std::error::Erro
                     None
                 } else {
                     Some(label_refs.as_slice())
+                };
+                let component_refs: Vec<&str> = components.iter().map(String::as_str).collect();
+                let components_opt = if component_refs.is_empty() {
+                    None
+                } else {
+                    Some(component_refs.as_slice())
                 };
                 let assignee_str = match assignee.as_deref() {
                     Some("me") => {
@@ -624,6 +636,7 @@ async fn run(cli: Cli, out: OutputConfig) -> Result<(), Box<dyn std::error::Erro
                     description.as_deref(),
                     priority.as_deref(),
                     labels_opt,
+                    components_opt,
                     assignee_str.as_deref(),
                     sprint.as_deref(),
                     parent.as_deref(),

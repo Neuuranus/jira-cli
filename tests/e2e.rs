@@ -131,6 +131,7 @@ async fn e2e_create_comment_transition_show_delete() {
             None,
             None,
             None,
+            None,
             &[],
         )
         .await
@@ -221,6 +222,7 @@ async fn e2e_create_subtask() {
             None,
             None,
             None,
+            None,
             &[],
         )
         .await
@@ -232,6 +234,7 @@ async fn e2e_create_subtask() {
             &project,
             "Sub-task",
             "e2e subtask [e2e-auto]",
+            None,
             None,
             None,
             None,
@@ -319,6 +322,7 @@ async fn e2e_issue_link_and_unlink() {
             None,
             None,
             None,
+            None,
             &[],
         )
         .await
@@ -328,6 +332,7 @@ async fn e2e_issue_link_and_unlink() {
             &project,
             "Task",
             "e2e link-b [e2e-auto]",
+            None,
             None,
             None,
             None,
