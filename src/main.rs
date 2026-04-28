@@ -666,6 +666,7 @@ async fn run(cli: Cli, out: OutputConfig) -> Result<(), Box<dyn std::error::Erro
                     priority: priority.as_deref(),
                     labels: parsed_labels.as_deref(),
                     components: parsed_components.as_deref(),
+                    fix_versions: None,
                     assignee: assignee_str.as_deref(),
                     parent: parent.as_deref(),
                 };
@@ -687,6 +688,9 @@ async fn run(cli: Cli, out: OutputConfig) -> Result<(), Box<dyn std::error::Erro
                     description: description.as_deref(),
                     priority: priority.as_deref(),
                     components: parsed_components.as_deref(),
+                    fix_versions: None,
+                    labels: None,
+                    assignee: None,
                 };
                 commands::issues::update(&client, &out, &key, &update, &field).await?
             }

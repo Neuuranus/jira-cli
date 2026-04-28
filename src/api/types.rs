@@ -68,6 +68,10 @@ pub struct IssueFields {
     pub description: Option<serde_json::Value>,
     pub labels: Option<Vec<String>>,
     pub components: Option<Vec<Component>>,
+    #[serde(rename = "fixVersions")]
+    pub fix_versions: Option<Vec<Version>>,
+    /// Affected versions (API field name: `versions`).
+    pub versions: Option<Vec<Version>>,
     pub created: Option<String>,
     pub updated: Option<String>,
     pub comment: Option<CommentList>,
@@ -180,6 +184,20 @@ pub struct Component {
     pub id: String,
     pub name: String,
     pub description: Option<String>,
+}
+
+/// A Jira project version (a release milestone; also used for affectedVersions).
+#[derive(Debug, Deserialize, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct Version {
+    pub id: String,
+    pub name: String,
+    pub description: Option<String>,
+    #[serde(default)]
+    pub released: Option<bool>,
+    #[serde(default)]
+    pub archived: Option<bool>,
+    pub release_date: Option<String>,
 }
 
 /// A Jira Agile board.
@@ -392,20 +410,33 @@ pub struct IssueDraft<'a> {
     pub priority: Option<&'a str>,
     pub labels: Option<&'a [&'a str]>,
     pub components: Option<&'a [&'a str]>,
+    pub fix_versions: Option<&'a [&'a str]>,
     pub assignee: Option<&'a str>,
     pub parent: Option<&'a str>,
 }
 
 /// Fields to update on an existing issue.
 ///
-/// All fields are optional. `components` is three-state:
+/// All fields are optional. `components`, `fix_versions`, and `labels` are three-state:
 /// `None` leaves the field untouched, `Some(&[])` clears it, `Some(&[..])` replaces it.
+/// `assignee` is also three-state: `None` = untouched, `Some(None)` = unassign, `Some(Some(id))` = set.
 #[derive(Default)]
 pub struct IssueUpdate<'a> {
     pub summary: Option<&'a str>,
     pub description: Option<&'a str>,
     pub priority: Option<&'a str>,
     pub components: Option<&'a [&'a str]>,
+    pub fix_versions: Option<&'a [&'a str]>,
+    pub labels: Option<&'a [&'a str]>,
+    /// Three-state assignee:
+    /// - `None` — leave untouched (assignee key absent from PUT body)
+    /// - `Some(None)` — unassign (PUT sends `"assignee": null`)
+    /// - `Some(Some(id))` — set to account ID (PUT sends `{"accountId": id}` on v3, `{"name": id}` on v2)
+    ///
+    /// Sentinels (`"none"`, `"me"`) are CLI-layer concepts only. By the time
+    /// a value reaches `IssueUpdate.assignee` it must already be resolved:
+    /// `"me"` → resolved account ID, `"none"` → `Some(None)`.
+    pub assignee: Option<Option<&'a str>>,
 }
 
 /// Build an Atlassian Document Format document from plain text.

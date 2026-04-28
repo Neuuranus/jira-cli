@@ -23,6 +23,7 @@ fn minimal_draft<'a>(
         priority: None,
         labels: None,
         components: None,
+        fix_versions: None,
         assignee: None,
         parent: None,
     }
@@ -231,7 +232,7 @@ async fn get_issue_includes_components() {
         .and(path("/rest/api/3/issue/PROJ-1"))
         .and(query_param(
             "fields",
-            "summary,status,assignee,reporter,priority,issuetype,description,labels,components,created,updated,comment,issuelinks",
+            "summary,status,assignee,reporter,priority,issuetype,description,labels,components,fixVersions,versions,created,updated,comment,issuelinks",
         ))
         .respond_with(ResponseTemplate::new(200).set_body_json(fixture))
         .expect(1)
@@ -245,6 +246,45 @@ async fn get_issue_includes_components() {
     assert_eq!(components[0].name, "Backend");
     assert_eq!(components[0].id, "10010");
     assert_eq!(components[1].description.as_deref(), Some("UI layer"));
+}
+
+#[tokio::test]
+async fn get_issue_includes_fix_versions() {
+    let server = MockServer::start().await;
+    let mut fixture = issue_fixture("PROJ-1", "Test", "Open");
+    fixture["fields"]["fixVersions"] = serde_json::json!([
+        {"id": "10010", "name": "1.2.0", "released": true, "archived": false, "releaseDate": "2024-03-01"},
+        {"id": "10020", "name": "1.3.0", "released": false, "archived": false},
+    ]);
+    fixture["fields"]["versions"] = serde_json::json!([
+        {"id": "10005", "name": "1.1.0", "released": true, "archived": false},
+    ]);
+
+    Mock::given(method("GET"))
+        .and(path("/rest/api/3/issue/PROJ-1"))
+        .and(query_param(
+            "fields",
+            "summary,status,assignee,reporter,priority,issuetype,description,labels,components,fixVersions,versions,created,updated,comment,issuelinks",
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(fixture))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = test_client(&server);
+    let issue = client.get_issue("PROJ-1").await.unwrap();
+    let fv = issue
+        .fields
+        .fix_versions
+        .as_ref()
+        .expect("fix_versions present");
+    assert_eq!(fv.len(), 2);
+    assert_eq!(fv[0].name, "1.2.0");
+    assert_eq!(fv[0].id, "10010");
+    assert_eq!(fv[0].release_date.as_deref(), Some("2024-03-01"));
+    let av = issue.fields.versions.as_ref().expect("versions present");
+    assert_eq!(av.len(), 1);
+    assert_eq!(av[0].name, "1.1.0");
 }
 
 // ── Search / list ──────────────────────────────────────────────────────────────
@@ -528,6 +568,7 @@ async fn create_issue_posts_correct_payload() {
                 priority: None,
                 labels: None,
                 components: None,
+                fix_versions: None,
                 assignee: None,
                 parent: None,
             },
@@ -1888,6 +1929,7 @@ async fn create_issue_v2_assignee_uses_name_field() {
                 priority: None,
                 labels: None,
                 components: None,
+                fix_versions: None,
                 assignee: Some("ruben"),
                 parent: None,
             },
@@ -1929,6 +1971,7 @@ async fn create_issue_v3_assignee_uses_account_id_field() {
                 priority: None,
                 labels: None,
                 components: None,
+                fix_versions: None,
                 assignee: Some("abc123"),
                 parent: None,
             },
@@ -2553,6 +2596,7 @@ async fn create_issue_with_parent_includes_parent_field() {
             priority: None,
             labels: None,
             components: None,
+            fix_versions: None,
             assignee: None,
             parent: Some("PROJ-5"),
         },
@@ -3610,6 +3654,7 @@ async fn create_issue_sends_components() {
                 priority: None,
                 labels: None,
                 components: Some(&["Backend", "API"]),
+                fix_versions: None,
                 assignee: None,
                 parent: None,
             },

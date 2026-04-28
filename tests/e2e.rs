@@ -58,6 +58,7 @@ fn minimal_draft<'a>(
         priority: None,
         labels: None,
         components: None,
+        fix_versions: None,
         assignee: None,
         parent: None,
     }
@@ -151,6 +152,7 @@ async fn e2e_create_comment_transition_show_delete() {
                 priority: None,
                 labels: None,
                 components: None,
+                fix_versions: None,
                 assignee: None,
                 parent: None,
             },
@@ -254,6 +256,7 @@ async fn e2e_create_subtask() {
                 priority: None,
                 labels: None,
                 components: None,
+                fix_versions: None,
                 assignee: None,
                 parent: Some(&parent.key),
             },

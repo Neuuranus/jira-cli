@@ -388,7 +388,7 @@ impl JiraClient {
     /// the remaining comments.
     pub async fn get_issue(&self, key: &str) -> Result<Issue, ApiError> {
         validate_issue_key(key)?;
-        let fields = "summary,status,assignee,reporter,priority,issuetype,description,labels,components,created,updated,comment,issuelinks";
+        let fields = "summary,status,assignee,reporter,priority,issuetype,description,labels,components,fixVersions,versions,created,updated,comment,issuelinks";
         let path = format!("issue/{key}?fields={fields}");
         let mut issue: Issue = self.get(&path).await?;
 
