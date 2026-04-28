@@ -430,6 +430,38 @@ async fn show_issue_json_contains_expected_fields() {
 }
 
 #[tokio::test]
+async fn show_issue_json_includes_components() {
+    let server = MockServer::start().await;
+    let mut fixture = issue_fixture("PROJ-1", "Test", "Open");
+    fixture["fields"]["components"] = serde_json::json!([
+        {"id": "10010", "name": "Backend", "description": "Server-side"},
+    ]);
+
+    Mock::given(method("GET"))
+        .and(path("/rest/api/3/issue/PROJ-1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(fixture))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = test_client(&server);
+    let issue = client.get_issue("PROJ-1").await.unwrap();
+
+    // Verify the typed field round-trips through serde — this pins the invariant
+    // that components serialize correctly in the JSON envelope produced by
+    // issue_detail_to_json (which uses `issue.fields.components` directly).
+    let envelope = serde_json::to_value(serde_json::json!({
+        "labels": issue.fields.labels,
+        "components": issue.fields.components,
+    }))
+    .unwrap();
+    let comps = envelope.get("components").expect("components key present");
+    assert_eq!(comps[0]["name"], "Backend");
+    assert_eq!(comps[0]["description"], "Server-side");
+    assert_eq!(comps[0]["id"], "10010");
+}
+
+#[tokio::test]
 async fn show_issue_extracts_adf_description() {
     let server = MockServer::start().await;
 

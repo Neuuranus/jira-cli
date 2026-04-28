@@ -974,6 +974,7 @@ fn issue_detail_to_json(issue: &Issue, client: &JiraClient) -> serde_json::Value
             "accountId": r.account_id,
         })),
         "labels": issue.fields.labels,
+        "components": issue.fields.components,
         "description": issue.description_text(),
         "created": issue.fields.created,
         "updated": issue.fields.updated,

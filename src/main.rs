@@ -846,7 +846,7 @@ fn schema_json() -> serde_json::Value {
             "summary": "...", "status": "In Progress", "type": "Bug", "priority": "High",
             "assignee": { "displayName": "Alice", "accountId": "abc123" },
             "reporter": { "displayName": "Bob", "accountId": "xyz" },
-            "labels": ["backend"], "description": "...",
+            "labels": ["backend"], "components": [{ "id": "10010", "name": "Backend", "description": "Server-side" }], "description": "...",
             "created": "2024-01-01", "updated": "2024-01-02",
             "comments": "[{ id, author: { displayName, accountId }, body, created, updated }]",
             "issueLinks": "[{ id, sentence, type: { name, inward, outward }, outwardIssue, inwardIssue }]"
@@ -880,6 +880,10 @@ fn schema_json() -> serde_json::Value {
         ("fields list", serde_json::json!({ "json_shape": { "total": "N", "fields": "[{ id, name, custom, type }]" } })),
         ("projects list", serde_json::json!({ "json_shape": { "total": "N", "projects": "[{ key, name, id, type }]" } })),
         ("projects show", serde_json::json!({ "json_shape": { "id": "10001", "key": "PROJ", "name": "My Project", "type": "software" } })),
+        ("projects components", serde_json::json!({ "json_shape": {
+            "project": "PROJ", "total": "N",
+            "components": "[{ id, name, description }]"
+        }})),
         ("search", serde_json::json!({ "json_shape": { "total": "N", "startAt": 0, "maxResults": 50, "issues": "[...]" } })),
         ("myself", serde_json::json!({ "json_shape": { "accountId": "abc123", "displayName": "Alice" } })),
         ("config show", serde_json::json!({ "json_shape": {
