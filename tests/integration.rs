@@ -3954,6 +3954,55 @@ async fn list_components_handles_empty_array() {
 }
 
 #[tokio::test]
+async fn list_versions_returns_versions() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("GET"))
+        .and(path("/rest/api/3/project/PROJ/versions"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+            {
+                "id": "10010", "name": "1.2.0",
+                "description": "Stable release", "released": true,
+                "archived": false, "releaseDate": "2024-03-01"
+            },
+            {
+                "id": "10020", "name": "1.3.0",
+                "released": false, "archived": false
+            },
+        ])))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = test_client(&server);
+    let versions = client.list_versions("PROJ").await.unwrap();
+    assert_eq!(versions.len(), 2);
+    assert_eq!(versions[0].name, "1.2.0");
+    assert_eq!(versions[0].description.as_deref(), Some("Stable release"));
+    assert_eq!(versions[0].release_date.as_deref(), Some("2024-03-01"));
+    assert_eq!(versions[0].released, Some(true));
+    assert_eq!(versions[1].name, "1.3.0");
+    assert!(versions[1].description.is_none());
+    assert_eq!(versions[1].released, Some(false));
+}
+
+#[tokio::test]
+async fn list_versions_handles_empty_array() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("GET"))
+        .and(path("/rest/api/3/project/EMPTY/versions"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([])))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = test_client(&server);
+    let versions = client.list_versions("EMPTY").await.unwrap();
+    assert!(versions.is_empty());
+}
+
+#[tokio::test]
 async fn create_issue_sends_fix_versions() {
     let server = MockServer::start().await;
 

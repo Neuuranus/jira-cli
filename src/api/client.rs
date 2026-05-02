@@ -788,6 +788,15 @@ impl JiraClient {
             .await
     }
 
+    /// List all versions for a project.
+    ///
+    /// Returns a flat array on both Jira Cloud (API v3) and DC/Server (API v2)
+    /// — the `project/{key}/versions` endpoint is not paginated.
+    pub async fn list_versions(&self, project_key: &str) -> Result<Vec<Version>, ApiError> {
+        self.get::<Vec<Version>>(&format!("project/{project_key}/versions"))
+            .await
+    }
+
     // ── Fields ────────────────────────────────────────────────────────────────
 
     /// List all available fields (system and custom).

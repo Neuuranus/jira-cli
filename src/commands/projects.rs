@@ -121,6 +121,76 @@ pub async fn components(
     Ok(())
 }
 
+pub async fn versions(
+    client: &JiraClient,
+    out: &OutputConfig,
+    project_key: &str,
+) -> Result<(), ApiError> {
+    let vers = client.list_versions(project_key).await?;
+
+    if out.json {
+        out.print_data(
+            &serde_json::to_string_pretty(&serde_json::json!({
+                "project": project_key,
+                "total": vers.len(),
+                "versions": vers.iter().map(|v| serde_json::json!({
+                    "id": v.id,
+                    "name": v.name,
+                    "description": v.description,
+                    "released": v.released,
+                    "archived": v.archived,
+                    "releaseDate": v.release_date,
+                })).collect::<Vec<_>>(),
+            }))
+            .expect("failed to serialize JSON"),
+        );
+    } else {
+        if vers.is_empty() {
+            out.print_message(&format!("No versions found for project {project_key}."));
+            return Ok(());
+        }
+
+        let color = use_color();
+        let name_w = vers.iter().map(|v| v.name.len()).max().unwrap_or(4).max(4) + 2;
+        let id_w = vers.iter().map(|v| v.id.len()).max().unwrap_or(2).max(2) + 2;
+
+        let header = format!(
+            "{:<name_w$} {:<id_w$} {:<10} {}",
+            "Name", "ID", "Released", "Release Date"
+        );
+        if color {
+            println!("{}", header.bold());
+        } else {
+            println!("{header}");
+        }
+
+        for v in &vers {
+            let released = match v.released {
+                Some(true) => "yes",
+                Some(false) => "no",
+                None => "-",
+            };
+            let release_date = v.release_date.as_deref().unwrap_or("-");
+            if color {
+                println!(
+                    "{} {:<id_w$} {:<10} {}",
+                    format!("{:<name_w$}", v.name).yellow(),
+                    v.id,
+                    released,
+                    release_date,
+                );
+            } else {
+                println!(
+                    "{:<name_w$} {:<id_w$} {:<10} {}",
+                    v.name, v.id, released, release_date
+                );
+            }
+        }
+        out.print_message(&format!("{} versions", vers.len()));
+    }
+    Ok(())
+}
+
 pub async fn show(client: &JiraClient, out: &OutputConfig, key: &str) -> Result<(), ApiError> {
     let project = client.get_project(key).await?;
 

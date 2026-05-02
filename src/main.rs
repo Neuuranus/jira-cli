@@ -464,6 +464,11 @@ enum ProjectsCommand {
         /// Project key (e.g. PROJ)
         key: String,
     },
+    /// List versions for a project
+    Versions {
+        /// Project key (e.g. PROJ)
+        key: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -788,6 +793,9 @@ async fn run(cli: Cli, out: OutputConfig) -> Result<(), Box<dyn std::error::Erro
             ProjectsCommand::Components { key } => {
                 commands::projects::components(&client, &out, &key).await?
             }
+            ProjectsCommand::Versions { key } => {
+                commands::projects::versions(&client, &out, &key).await?
+            }
         },
 
         Command::Users(cmd) => match cmd {
@@ -910,6 +918,10 @@ fn schema_json() -> serde_json::Value {
         ("projects components", serde_json::json!({ "json_shape": {
             "project": "PROJ", "total": "N",
             "components": "[{ id, name, description }]"
+        }})),
+        ("projects versions", serde_json::json!({ "json_shape": {
+            "project": "PROJ", "total": "N",
+            "versions": "[{ id, name, description, released, archived, releaseDate }]"
         }})),
         ("search", serde_json::json!({ "json_shape": { "total": "N", "startAt": 0, "maxResults": 50, "issues": "[...]" } })),
         ("myself", serde_json::json!({ "json_shape": { "accountId": "abc123", "displayName": "Alice" } })),
