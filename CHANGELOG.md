@@ -19,6 +19,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 
 
+
+## [0.3.13](https://github.com/rvben/jira-cli/compare/v0.3.12...v0.3.13) - 2026-05-02
+
+### Added
+
+- **projects**: add versions subcommand for version discovery ([7d46727](https://github.com/rvben/jira-cli/commit/7d46727a299bad1c4f8f38b97792bfb0a986b336))
+- **issues**: add --fix-versions filter to issues list ([ada429b](https://github.com/rvben/jira-cli/commit/ada429b502a8003e961c98ed90fc39171319b763))
+- **issues**: add --fix-versions, --labels, --assignee flags to issues update ([06d61d3](https://github.com/rvben/jira-cli/commit/06d61d3f5abc0f5f21037fed3188aca8884e2bfb))
+- **issues**: add --fix-version flag to issues create ([4ddd0f6](https://github.com/rvben/jira-cli/commit/4ddd0f61fd11cc83f035aee9332a5eda67384d13))
+- **issues**: render fix versions and affected versions in issue detail view ([3f00bf2](https://github.com/rvben/jira-cli/commit/3f00bf203b27b313d7221c6393c1226a846e3b45))
+- **issues**: deserialize fixVersions and affectedVersions from Jira API ([8f285b5](https://github.com/rvben/jira-cli/commit/8f285b56bd947164e5af12cf29f1e46947b5ce4f))
+
 ## [0.3.12](https://github.com/rvben/jira-cli/compare/v0.3.11...v0.3.12) - 2026-04-28
 
 ### Added
