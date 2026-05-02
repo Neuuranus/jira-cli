@@ -8,7 +8,7 @@ use crate::output::{OutputConfig, use_color};
 /// Filter set shared by `issues list` and `issues mine`.
 ///
 /// Each `Option<&str>` field maps to one CLI flag and emits one JQL clause when set.
-/// `components` and `labels` are slices because the CLI accepts those flags repeatably.
+/// `components`, `labels`, and `fix_versions` are slices because the CLI accepts those flags repeatably.
 #[derive(Default)]
 pub struct ListFilters<'a> {
     pub project: Option<&'a str>,
@@ -981,6 +981,20 @@ pub fn issue_detail_to_json(issue: &Issue, client: &JiraClient) -> serde_json::V
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
+fn jql_multi_value(field: &str, values: &[&str]) -> Option<String> {
+    match values.len() {
+        0 => None,
+        1 => Some(format!(r#"{field} = "{}""#, escape_jql(values[0]))),
+        _ => {
+            let quoted: Vec<String> = values
+                .iter()
+                .map(|v| format!(r#""{}""#, escape_jql(v)))
+                .collect();
+            Some(format!("{field} in ({})", quoted.join(", ")))
+        }
+    }
+}
+
 fn build_list_jql(filters: &ListFilters<'_>) -> String {
     let mut parts: Vec<String> = Vec::new();
 
@@ -1008,43 +1022,13 @@ fn build_list_jql(filters: &ListFilters<'_>) -> String {
         }
     }
     if let Some(comps) = filters.components {
-        match comps.len() {
-            0 => {}
-            1 => parts.push(format!(r#"component = "{}""#, escape_jql(comps[0]))),
-            _ => {
-                let quoted: Vec<String> = comps
-                    .iter()
-                    .map(|c| format!(r#""{}""#, escape_jql(c)))
-                    .collect();
-                parts.push(format!("component in ({})", quoted.join(", ")));
-            }
-        }
+        parts.extend(jql_multi_value("component", comps));
     }
     if let Some(lbls) = filters.labels {
-        match lbls.len() {
-            0 => {}
-            1 => parts.push(format!(r#"labels = "{}""#, escape_jql(lbls[0]))),
-            _ => {
-                let quoted: Vec<String> = lbls
-                    .iter()
-                    .map(|l| format!(r#""{}""#, escape_jql(l)))
-                    .collect();
-                parts.push(format!("labels in ({})", quoted.join(", ")));
-            }
-        }
+        parts.extend(jql_multi_value("labels", lbls));
     }
     if let Some(fvs) = filters.fix_versions {
-        match fvs.len() {
-            0 => {}
-            1 => parts.push(format!(r#"fixVersion = "{}""#, escape_jql(fvs[0]))),
-            _ => {
-                let quoted: Vec<String> = fvs
-                    .iter()
-                    .map(|v| format!(r#""{}""#, escape_jql(v)))
-                    .collect();
-                parts.push(format!("fixVersion in ({})", quoted.join(", ")));
-            }
-        }
+        parts.extend(jql_multi_value("fixVersion", fvs));
     }
     if let Some(e) = filters.jql_extra {
         parts.push(format!("({e})"));
