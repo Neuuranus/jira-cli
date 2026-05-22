@@ -183,6 +183,10 @@ enum IssuesCommand {
         #[arg(long)]
         jql: Option<String>,
 
+        /// Jira saved filter ID or name to apply
+        #[arg(long)]
+        filter: Option<String>,
+
         /// Maximum number of results
         #[arg(short = 'n', long, default_value = "50")]
         limit: usize,
@@ -646,6 +650,7 @@ async fn run(cli: Cli, out: OutputConfig) -> Result<(), Box<dyn std::error::Erro
                 labels,
                 fix_versions,
                 jql,
+                filter,
                 limit,
                 offset,
                 all,
@@ -663,6 +668,7 @@ async fn run(cli: Cli, out: OutputConfig) -> Result<(), Box<dyn std::error::Erro
                     labels: parsed_labels.as_deref(),
                     fix_versions: parsed_fix_versions.as_deref(),
                     jql_extra: jql.as_deref(),
+                    filter: filter.as_deref(),
                 };
                 commands::issues::list(&client, &out, filters, limit, offset, all).await?
             }

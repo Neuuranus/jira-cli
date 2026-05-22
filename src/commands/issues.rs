@@ -23,6 +23,8 @@ pub struct ListFilters<'a> {
     pub labels: Option<&'a [&'a str]>,
     pub fix_versions: Option<&'a [&'a str]>,
     pub jql_extra: Option<&'a str>,
+    /// Jira saved filter ID or name (emits `filter = <value>` in JQL).
+    pub filter: Option<&'a str>,
 }
 
 pub async fn list(
@@ -1160,6 +1162,9 @@ fn build_list_jql(filters: &ListFilters<'_>) -> String {
     }
     if let Some(fvs) = filters.fix_versions {
         parts.extend(jql_multi_value("fixVersion", fvs));
+    }
+    if let Some(f) = filters.filter {
+        parts.push(format!(r#"filter = "{}""#, escape_jql(f)));
     }
     if let Some(e) = filters.jql_extra {
         parts.push(format!("({e})"));
