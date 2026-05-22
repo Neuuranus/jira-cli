@@ -77,6 +77,21 @@ pub struct IssueFields {
     pub comment: Option<CommentList>,
     #[serde(rename = "issuelinks")]
     pub issue_links: Option<Vec<IssueLink>>,
+    pub attachment: Option<Vec<Attachment>>,
+}
+
+/// A file attachment on a Jira issue.
+#[derive(Debug, Deserialize, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct Attachment {
+    pub id: String,
+    pub filename: String,
+    pub author: Option<UserField>,
+    pub created: Option<String>,
+    pub size: Option<u64>,
+    pub mime_type: Option<String>,
+    /// Direct download URL (authenticated via the same HTTP client).
+    pub content: String,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]

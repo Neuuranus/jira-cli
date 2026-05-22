@@ -618,6 +618,42 @@ impl JiraClient {
         }
     }
 
+    /// List attachments on an issue.
+    pub async fn get_issue_attachments(&self, key: &str) -> Result<Vec<Attachment>, ApiError> {
+        validate_issue_key(key)?;
+        #[derive(serde::Deserialize)]
+        struct Wrapper {
+            fields: Fields,
+        }
+        #[derive(serde::Deserialize)]
+        struct Fields {
+            attachment: Option<Vec<Attachment>>,
+        }
+        let w: Wrapper = self.get(&format!("issue/{key}?fields=attachment")).await?;
+        Ok(w.fields.attachment.unwrap_or_default())
+    }
+
+    /// Download the raw bytes of an attachment by its content URL.
+    ///
+    /// The `content` field on each [`Attachment`] is the full URL returned by
+    /// Jira. The same authenticated HTTP client is used so credentials are
+    /// forwarded automatically.
+    pub async fn download_attachment_content(
+        &self,
+        content_url: &str,
+    ) -> Result<Vec<u8>, ApiError> {
+        let resp = self.http.get(content_url).send().await?;
+        let status = resp.status();
+        if !status.is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            return Err(Self::map_status(status.as_u16(), body));
+        }
+        resp.bytes()
+            .await
+            .map(|b| b.to_vec())
+            .map_err(ApiError::Http)
+    }
+
     // ── Users ─────────────────────────────────────────────────────────────────
 
     /// Search for users matching a query string.

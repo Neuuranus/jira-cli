@@ -445,9 +445,36 @@ enum IssuesCommand {
         dry_run: bool,
     },
 
+    /// Manage attachments on an issue
+    #[command(subcommand, visible_alias = "attachment")]
+    Attach(AttachCommand),
+
     /// Catch bare issue keys: `jira issue PROJ-123` → `jira issues show PROJ-123`
     #[command(external_subcommand)]
     External(Vec<String>),
+}
+
+#[derive(Subcommand)]
+enum AttachCommand {
+    /// List attachments on an issue
+    List {
+        /// Issue key (e.g. PROJ-123)
+        key: String,
+    },
+
+    /// Download attachments from an issue (all by default)
+    Download {
+        /// Issue key (e.g. PROJ-123)
+        key: String,
+
+        /// Download only this attachment ID (downloads all if omitted)
+        #[arg(long)]
+        id: Option<String>,
+
+        /// Directory to save files to (default: current directory)
+        #[arg(long)]
+        dir: Option<std::path::PathBuf>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -778,6 +805,22 @@ async fn run(cli: Cli, out: OutputConfig) -> Result<(), Box<dyn std::error::Erro
                 assignee,
                 dry_run,
             } => commands::issues::bulk_assign(&client, &out, &jql, &assignee, dry_run).await?,
+            IssuesCommand::Attach(cmd) => match cmd {
+                AttachCommand::List { key } => {
+                    commands::issues::list_attachments(&client, &out, &key).await?
+                }
+                AttachCommand::Download { key, id, dir } => {
+                    let dest = dir.unwrap_or_else(|| std::path::PathBuf::from("."));
+                    commands::issues::download_attachments(
+                        &client,
+                        &out,
+                        &key,
+                        id.as_deref(),
+                        &dest,
+                    )
+                    .await?
+                }
+            },
             IssuesCommand::External(args) => {
                 let key = args
                     .first()

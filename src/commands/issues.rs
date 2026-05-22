@@ -1,7 +1,10 @@
+use std::path::Path;
+
 use owo_colors::OwoColorize;
 
 use crate::api::{
-    ApiError, Issue, IssueDraft, IssueLink, IssueUpdate, JiraClient, Version, escape_jql,
+    ApiError, Attachment, Issue, IssueDraft, IssueLink, IssueUpdate, JiraClient, Version,
+    escape_jql,
 };
 use crate::output::{OutputConfig, use_color};
 
@@ -671,6 +674,134 @@ pub async fn bulk_assign(
     Ok(())
 }
 
+/// List attachments on an issue.
+pub async fn list_attachments(
+    client: &JiraClient,
+    out: &OutputConfig,
+    key: &str,
+) -> Result<(), ApiError> {
+    let attachments = client.get_issue_attachments(key).await?;
+
+    if out.json {
+        out.print_data(
+            &serde_json::to_string_pretty(&serde_json::json!({
+                "issue": key,
+                "total": attachments.len(),
+                "attachments": attachments.iter().map(attachment_to_json).collect::<Vec<_>>(),
+            }))
+            .expect("failed to serialize JSON"),
+        );
+    } else if attachments.is_empty() {
+        out.print_message(&format!("No attachments on {key}."));
+    } else {
+        let color = use_color();
+        out.print_message(&format!("Attachments on {key} ({}):", attachments.len()));
+        let id_w = attachments
+            .iter()
+            .map(|a| a.id.len())
+            .max()
+            .unwrap_or(2)
+            .max(2)
+            + 1;
+        let name_w = attachments
+            .iter()
+            .map(|a| a.filename.len())
+            .max()
+            .unwrap_or(8)
+            .max(8)
+            + 2;
+        let header = format!(
+            "{:<id_w$} {:<name_w$} {:>10}  {}",
+            "ID", "Filename", "Size", "Created"
+        );
+        if color {
+            println!("{}", header.bold());
+        } else {
+            println!("{header}");
+        }
+        for a in &attachments {
+            let size = a.size.map(format_size).unwrap_or_else(|| "-".into());
+            let created = a.created.as_deref().map(format_date).unwrap_or_default();
+            let name = if color {
+                format!("{:<name_w$}", a.filename).cyan().to_string()
+            } else {
+                format!("{:<name_w$}", a.filename)
+            };
+            println!("{:<id_w$} {name} {:>10}  {created}", a.id, size);
+        }
+    }
+    Ok(())
+}
+
+/// Download one or all attachments from an issue to a local directory.
+pub async fn download_attachments(
+    client: &JiraClient,
+    out: &OutputConfig,
+    key: &str,
+    attachment_id: Option<&str>,
+    dir: &Path,
+) -> Result<(), ApiError> {
+    let all = client.get_issue_attachments(key).await?;
+
+    let targets: Vec<&Attachment> = match attachment_id {
+        Some(id) => {
+            let found = all.iter().find(|a| a.id == id);
+            match found {
+                Some(a) => vec![a],
+                None => {
+                    return Err(ApiError::NotFound(format!(
+                        "Attachment '{id}' not found on {key}"
+                    )));
+                }
+            }
+        }
+        None => all.iter().collect(),
+    };
+
+    if targets.is_empty() {
+        out.print_message(&format!("No attachments on {key}."));
+        return Ok(());
+    }
+
+    std::fs::create_dir_all(dir)
+        .map_err(|e| ApiError::Other(format!("Cannot create directory: {e}")))?;
+
+    let mut results: Vec<serde_json::Value> = Vec::new();
+    for attachment in &targets {
+        let dest = dir.join(&attachment.filename);
+        let bytes = client
+            .download_attachment_content(&attachment.content)
+            .await?;
+        std::fs::write(&dest, &bytes)
+            .map_err(|e| ApiError::Other(format!("Cannot write '{}': {e}", dest.display())))?;
+        results.push(serde_json::json!({
+            "id": attachment.id,
+            "filename": attachment.filename,
+            "size": bytes.len(),
+            "path": dest.display().to_string(),
+        }));
+        if !out.json {
+            out.print_message(&format!(
+                "Downloaded: {} → {}",
+                attachment.filename,
+                dest.display()
+            ));
+        }
+    }
+
+    if out.json {
+        out.print_data(
+            &serde_json::to_string_pretty(&serde_json::json!({
+                "issue": key,
+                "downloaded": results.len(),
+                "files": results,
+            }))
+            .expect("failed to serialize JSON"),
+        );
+    }
+    Ok(())
+}
+
 // ── Rendering ─────────────────────────────────────────────────────────────────
 
 pub(crate) fn render_issue_table(issues: &[Issue], out: &OutputConfig) {
@@ -1072,6 +1203,33 @@ fn open_in_browser(url: &str) {
     }
 }
 
+fn attachment_to_json(a: &Attachment) -> serde_json::Value {
+    serde_json::json!({
+        "id": a.id,
+        "filename": a.filename,
+        "mimeType": a.mime_type,
+        "size": a.size,
+        "created": a.created,
+        "author": a.author.as_ref().map(|u| serde_json::json!({
+            "displayName": u.display_name,
+            "accountId": u.account_id,
+        })),
+        "content": a.content,
+    })
+}
+
+fn format_size(bytes: u64) -> String {
+    const KB: u64 = 1024;
+    const MB: u64 = KB * 1024;
+    if bytes >= MB {
+        format!("{:.1} MB", bytes as f64 / MB as f64)
+    } else if bytes >= KB {
+        format!("{:.1} KB", bytes as f64 / KB as f64)
+    } else {
+        format!("{bytes} B")
+    }
+}
+
 /// Truncate a string to `max` characters (not bytes), appending `…` if cut.
 fn truncate(s: &str, max: usize) -> String {
     let mut chars = s.chars();
@@ -1172,6 +1330,7 @@ mod tests {
                 updated: None,
                 comment: None,
                 issue_links: None,
+                attachment: None,
             },
         }
     }
