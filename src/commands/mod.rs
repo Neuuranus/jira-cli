@@ -4,5 +4,6 @@ pub mod issues;
 pub mod myself;
 pub mod projects;
 pub mod search;
+pub mod skills;
 pub mod sprints;
 pub mod users;

@@ -133,6 +133,14 @@ enum Command {
     /// Dump all commands and arguments as JSON for agent introspection
     Schema,
 
+    /// Install jira skill definition for coding CLIs (Claude Code, Cursor, Codex, Gemini)
+    #[command(name = "skills-init")]
+    SkillsInit {
+        /// Copy skill to this directory instead of auto-detected CLI directories
+        #[arg(long)]
+        path: Option<std::path::PathBuf>,
+    },
+
     /// Generate shell completions
     Completions {
         /// Shell to generate completions for
@@ -574,6 +582,11 @@ async fn run(cli: Cli, out: OutputConfig) -> Result<(), Box<dyn std::error::Erro
             return Ok(());
         }
 
+        Command::SkillsInit { path } => {
+            commands::skills::init(&out, path.as_deref())?;
+            return Ok(());
+        }
+
         Command::Completions { shell, install } => {
             handle_completions(shell, install, &out)?;
             return Ok(());
@@ -883,7 +896,11 @@ async fn run(cli: Cli, out: OutputConfig) -> Result<(), Box<dyn std::error::Erro
         },
 
         // Already handled above
-        Command::Schema | Command::Completions { .. } | Command::Config(_) | Command::Init => {}
+        Command::Schema
+        | Command::Completions { .. }
+        | Command::Config(_)
+        | Command::Init
+        | Command::SkillsInit { .. } => {}
     }
 
     Ok(())
