@@ -654,6 +654,45 @@ impl JiraClient {
             .map_err(ApiError::Http)
     }
 
+    /// Upload a local file as an attachment to an issue.
+    ///
+    /// Jira requires `X-Atlassian-Token: no-check` to bypass XSRF protection
+    /// on this endpoint.
+    pub async fn upload_attachment(
+        &self,
+        key: &str,
+        file_path: &std::path::Path,
+    ) -> Result<Vec<Attachment>, ApiError> {
+        validate_issue_key(key)?;
+        let url = format!("{}/issue/{key}/attachments", self.base_url);
+
+        let file_bytes = std::fs::read(file_path)
+            .map_err(|e| ApiError::Other(format!("Cannot read '{}': {e}", file_path.display())))?;
+        let filename = file_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("attachment")
+            .to_string();
+
+        let part = reqwest::multipart::Part::bytes(file_bytes).file_name(filename);
+        let form = reqwest::multipart::Form::new().part("file", part);
+
+        let resp = self
+            .http
+            .post(&url)
+            .header("X-Atlassian-Token", "no-check")
+            .multipart(form)
+            .send()
+            .await?;
+
+        let status = resp.status();
+        if !status.is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            return Err(Self::map_status(status.as_u16(), body));
+        }
+        resp.json::<Vec<Attachment>>().await.map_err(ApiError::Http)
+    }
+
     // ── Users ─────────────────────────────────────────────────────────────────
 
     /// Search for users matching a query string.

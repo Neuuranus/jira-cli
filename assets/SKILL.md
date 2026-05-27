@@ -195,9 +195,15 @@ jira issues attach download MYAPP-123 --dir ./attachments
 
 # Download a specific attachment by ID
 jira issues attach download MYAPP-123 --id <attachment-id> --dir ./attachments
+
+# Upload one or more files as attachments
+jira issues attach upload MYAPP-123 ./report.pdf
+jira issues attach upload MYAPP-123 ./a.txt ./b.png
 ```
 
 `attach list` JSON: `{ "issue", "total", "attachments": [{ "id", "filename", "mimeType", "size", "created", "author", "content" }] }`
+
+`attach upload` JSON: `{ "issue", "uploaded": N, "attachments": [{ "id", "filename", "mimeType", "size", "created", "author", "content" }] }`
 
 ## Bulk operations
 

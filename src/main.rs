@@ -487,6 +487,16 @@ enum AttachCommand {
         #[arg(long)]
         dir: Option<std::path::PathBuf>,
     },
+
+    /// Upload one or more files as attachments to an issue
+    Upload {
+        /// Issue key (e.g. PROJ-123)
+        key: String,
+
+        /// File path(s) to upload
+        #[arg(required = true)]
+        files: Vec<std::path::PathBuf>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -838,6 +848,9 @@ async fn run(cli: Cli, out: OutputConfig) -> Result<(), Box<dyn std::error::Erro
                         &dest,
                     )
                     .await?
+                }
+                AttachCommand::Upload { key, files } => {
+                    commands::issues::upload_attachments(&client, &out, &key, &files).await?
                 }
             },
             IssuesCommand::External(args) => {

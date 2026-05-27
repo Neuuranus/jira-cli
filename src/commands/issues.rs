@@ -804,6 +804,41 @@ pub async fn download_attachments(
     Ok(())
 }
 
+/// Upload one or more files as attachments to an issue.
+pub async fn upload_attachments(
+    client: &JiraClient,
+    out: &OutputConfig,
+    key: &str,
+    files: &[std::path::PathBuf],
+) -> Result<(), ApiError> {
+    let mut results: Vec<serde_json::Value> = Vec::new();
+
+    for file_path in files {
+        let attachments = client.upload_attachment(key, file_path).await?;
+        for attachment in &attachments {
+            results.push(attachment_to_json(attachment));
+            if !out.json {
+                out.print_message(&format!(
+                    "Uploaded: {} (id: {})",
+                    attachment.filename, attachment.id
+                ));
+            }
+        }
+    }
+
+    if out.json {
+        out.print_data(
+            &serde_json::to_string_pretty(&serde_json::json!({
+                "issue": key,
+                "uploaded": results.len(),
+                "attachments": results,
+            }))
+            .expect("failed to serialize JSON"),
+        );
+    }
+    Ok(())
+}
+
 // ── Rendering ─────────────────────────────────────────────────────────────────
 
 pub(crate) fn render_issue_table(issues: &[Issue], out: &OutputConfig) {
